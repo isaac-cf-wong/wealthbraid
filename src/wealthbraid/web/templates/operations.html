@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}History{% endblock %}
+{% block content %}
+<h1>History</h1>
+<p class="lede">Every operation ever proposed, newest first. Nothing here is ever edited or removed.</p>
+<form class="filters" method="get">
+  <label>Status
+    <select name="status">
+      <option value="">all</option>
+      {% for s in ["pending", "applied", "rejected", "approved"] %}<option {% if status == s %}selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select>
+  </label>
+  <button class="btn">Filter</button>
+</form>
+<div class="card table-wrap">
+  <table>
+    <thead><tr><th>Status</th><th>Operation</th><th>Tool</th><th>Proposed by</th><th>Confidence</th><th>Decided by</th><th>When</th></tr></thead>
+    <tbody>
+    {% for op in operations %}
+      <tr>
+        <td><span class="badge {{ op.status }}">{{ op.status }}</span></td>
+        <td><a href="/operations/{{ op.id }}">{{ op.summary }}</a></td>
+        <td class="small">{{ op.tool }}</td>
+        <td>{{ m.actor_badge(op.actor) }}</td>
+        <td>{{ m.confidence(op.confidence) }}</td>
+        <td>{% if op.decision %}{{ m.actor_badge(op.decision.actor) }}{% endif %}</td>
+        <td class="faint small">{{ op.proposed_at }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="7" class="empty">No operations.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

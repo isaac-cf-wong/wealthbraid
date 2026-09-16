@@ -1,0 +1,4 @@
+# Jinja2 templates are not plain HTML; prettier corrupts template tags.
+src/wealthbraid/web/templates/
+# Vendored third-party asset
+src/wealthbraid/web/static/htmx.min.js

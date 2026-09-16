@@ -20,14 +20,11 @@ functionality or the change to existing behavior.
 
 ## 💻 Proposed API / Usage Example
 
-If applicable, show how you would imagine the Python code looking with this new
-feature:
+If applicable, show how you would imagine using the new feature:
 
-```python
-import package_name_placeholder
-
+```bash
 # How you'd like to use the new feature
-result = package_name_placeholder.new_function(param="example")
+wealthbraid new-command --option example
 ```
 
 ## 🌈 Use Case & Benefits

@@ -32,6 +32,8 @@ repos:
       hooks:
           - id: typos
             args: []
+            # Vendored, minified third-party JavaScript
+            exclude: ^src/wealthbraid/web/static/htmx\.min\.js$
 
     - repo: https://github.com/rbubley/mirrors-prettier
       rev: v3.9.7

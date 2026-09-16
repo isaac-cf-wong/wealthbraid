@@ -1,19 +1,14 @@
 ---
 title: API Reference
-description: Complete reference for the python package template.
+description: Python API of wealthbraid.
 icon: material/api
 ---
 
-This section documents the public API of the python package template.
+wealthbraid is used mainly through its CLI and web UI. The Python API below is
+for embedding and for contributors.
 
-<!-- prettier-ignore-start -->
-
-!!!notes
-    The pages only serve for demonstration purposes.
-
-<!-- prettier-ignore-end -->
-
-## Main Sections
-
-- **[Hello World](hello_world)** – Hello world functions.
-- **[Utility](utils)** – Utility functions.
+- **[Engine](engine.md)**: pure double-entry accounting.
+- **[Store](store.md)**: record envelopes and the append-only log.
+- **[Book](book.md)**: settings, projection, workflow, verification.
+- **[Services](services.md)**: import, categorize, reconcile, explain, reports,
+  scenarios.

@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Verify{% endblock %}
+{% block content %}
+<h1>Verify</h1>
+<p class="lede">The book was just rebuilt from the files on disk: every record's content hash, the hash chain, the evidence digests, the accounting invariants, and the approval provenance.</p>
+{% if report.ok %}
+  <div class="card empty"><strong>All {{ report.records }} records verified</strong>Head {{ m.record_link(report.head) if report.head else "—" }}</div>
+{% else %}
+  <div class="card table-wrap">
+    <table>
+      <thead><tr><th>Check</th><th>Record</th><th>Problem</th></tr></thead>
+      <tbody>
+      {% for p in report.problems %}
+        <tr><td><span class="badge discrepancy">{{ p.check }}</span></td><td>{% if p.record %}<code class="small">{{ p.record }}</code>{% endif %}</td><td>{{ p.message }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endif %}
+{% endblock %}

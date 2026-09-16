@@ -136,3 +136,6 @@ dmypy.json
 
 # Node.js
 node_modules/
+
+# CodeGraph local index
+.codegraph/

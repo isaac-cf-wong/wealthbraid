@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}{{ op.summary }}{% endblock %}
+{% block content %}
+<p class="small"><a href="/operations">← History</a></p>
+<h1>Operation</h1>
+<p class="lede">Everything recorded about this proposal: who made it, from which inputs and evidence, why, how confident, what it changes, and who decided.</p>
+{% include "_operation_card.html" %}
+
+{% if op.inputs %}
+<h2>Inputs</h2>
+<div class="card"><pre class="mono small">{{ op.inputs | tojson(indent=2) }}</pre></div>
+{% endif %}
+{% endblock %}

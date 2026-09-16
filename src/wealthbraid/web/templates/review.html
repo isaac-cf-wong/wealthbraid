@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Review{% endblock %}
+{% block content %}
+<h1>Review</h1>
+<p class="lede">Proposals change nothing until you approve them. Lowest confidence first. Approval re-checks each proposal against the book as it is now.</p>
+
+{% if pending %}
+  {% for op in pending %}
+    {% include "_operation_card.html" %}
+  {% endfor %}
+{% else %}
+  <div class="card empty"><strong>Nothing to review</strong>When an agent or import proposes changes, they appear here.</div>
+{% endif %}
+
+{% if queue.counts.unmatched_lines or queue.counts.reconciliation_exceptions or queue.counts.issues %}
+<h2>Also waiting</h2>
+<div class="card">
+  <ul>
+    {% if queue.counts.unmatched_lines %}<li><a href="/lines">{{ queue.counts.unmatched_lines }} statement lines</a> are not yet accounted for.</li>{% endif %}
+    {% if queue.counts.reconciliation_exceptions %}<li><a href="/reconciliations">{{ queue.counts.reconciliation_exceptions }} reconciliations</a> need attention.</li>{% endif %}
+    {% if queue.counts.issues %}<li><a href="/verify">{{ queue.counts.issues }} integrity issues</a> were found in the record log.</li>{% endif %}
+  </ul>
+</div>
+{% endif %}
+{% endblock %}

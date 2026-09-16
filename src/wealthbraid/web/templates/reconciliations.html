@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Reconciliations{% endblock %}
+{% block content %}
+<h1>Reconciliations</h1>
+<p class="lede">Each approved reconciliation is a checkpoint, re-checked against the ledger as it is now. <strong>Changed</strong> means it matched when you approved it, but a later change moved the balance for that date.</p>
+{% if rows %}
+<div class="card table-wrap">
+  <table>
+    <thead><tr><th>Status</th><th>Account</th><th>Date</th><th class="num">Statement</th><th class="num">Ledger then</th><th class="num">Ledger now</th><th class="num">Difference</th><th>Record</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr>
+        <td><span class="badge {{ r.status }}">{{ r.status }}</span></td>
+        <td>{{ r.account }}</td>
+        <td class="small">{{ r.date }}</td>
+        <td class="num">{{ r.statement_balance }} {{ r.commodity }}</td>
+        <td class="num">{{ r.recorded_ledger_balance }}</td>
+        <td class="num">{{ r.current_ledger_balance }}</td>
+        <td class="num">{{ r.current_difference }}</td>
+        <td>{{ m.record_link(r.id) }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card empty"><strong>No reconciliations yet</strong>Propose one with <code>wealthbraid reconcile ACCOUNT --date … --balance …</code></div>
+{% endif %}
+{% endblock %}
