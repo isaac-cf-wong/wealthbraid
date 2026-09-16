@@ -1,0 +1,26 @@
+{% macro amounts(mapping) -%}
+  {%- for code, qty in mapping.items() %}{% if not loop.first %}, {% endif %}{{ qty }} {{ code }}{% endfor -%}
+  {%- if not mapping %}0{% endif -%}
+{%- endmacro %}
+
+{% macro actor_badge(actor) -%}
+  {%- set kind = actor.split(":")[0] -%}
+  <span class="badge {{ 'agent' if kind == 'agent' else 'human' if kind == 'human' else '' }}">{{ actor }}</span>
+{%- endmacro %}
+
+{% macro confidence(value) -%}
+  <span class="confidence {{ 'low' if value < 0.6 else '' }}" title="Proposer confidence">
+    <meter min="0" max="1" low="0.6" high="0.85" optimum="1" value="{{ value }}"></meter>{{ (value * 100) | round | int }}%
+  </span>
+{%- endmacro %}
+
+{% macro postings(entry) -%}
+  <div class="small muted">{{ entry.date }}{% if entry.payee %} · {{ entry.payee }}{% endif %}{% if entry.narration %} · {{ entry.narration }}{% endif %}</div>
+  <table class="postings">
+    {% for p in entry.postings %}
+      <tr><td>{{ p.account }}</td><td class="num">{{ p.amount }}</td><td>{{ p.commodity }}</td></tr>
+    {% endfor %}
+  </table>
+{%- endmacro %}
+
+{% macro record_link(id) -%}<a class="mono" href="/trace/{{ id }}">{{ id }}</a>{%- endmacro %}

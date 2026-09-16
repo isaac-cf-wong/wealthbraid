@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Unmatched lines{% endblock %}
+{% block content %}
+<h1>Unmatched statement lines</h1>
+<p class="lede">Rows your bank reported that no entry accounts for yet. Ask an agent to run <code>wealthbraid categorize</code>, or assign an account here. What you assign is recorded as your own approved entry.</p>
+
+<datalist id="accounts">{% for a in accounts %}<option value="{{ a }}">{% endfor %}</datalist>
+{% if lines %}
+<div class="card table-wrap">
+  <table>
+    <thead><tr><th>Date</th><th>Account</th><th class="num">Amount</th><th>Description</th><th>Assign to</th></tr></thead>
+    <tbody>
+    {% for line in lines %}
+      <tr>
+        <td class="small">{{ line.date }}</td>
+        <td class="small">{{ line.account }}</td>
+        <td class="num">{{ line.amount }} {{ line.commodity }}</td>
+        <td>{{ line.payee or "" }} {{ line.description }} <div class="faint small">{{ m.record_link(line.id) }}</div>
+          {% for op_id in line.pending_operations %}<div class="small"><span class="badge pending">proposed</span> <a href="/operations/{{ op_id }}">review proposal</a></div>{% endfor %}</td>
+        <td>
+          <form class="filters" method="post" action="/lines/{{ line.id }}/categorize">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <input type="text" name="account" list="accounts" required placeholder="Expenses:…" aria-label="Counter account">
+            <button class="btn">Post</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card empty"><strong>All statement lines are accounted for</strong>Import a statement to see new lines here.</div>
+{% endif %}
+{% endblock %}

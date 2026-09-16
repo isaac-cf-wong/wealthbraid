@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+<h1>{{ book.name }}</h1>
+<p class="lede">As of {{ today }} · {{ state.records | length }} records · head {{ m.record_link(state.head.id) if state.head else "—" }}</p>
+
+<div class="stats">
+  <div class="card stat">
+    <div class="label">Net worth ({{ worth.currency }})</div>
+    <div class="value">{{ worth.net_worth }}</div>
+    {% if worth.unvalued_assets %}<div class="small faint">plus unvalued assets {{ m.amounts(worth.unvalued_assets) }}</div>{% endif %}
+    {% if worth.unvalued_liabilities %}<div class="small faint">plus unvalued liabilities {{ m.amounts(worth.unvalued_liabilities) }}</div>{% endif %}
+    {% for warning in worth.price_warnings %}<div class="small warning">{{ warning }}</div>{% endfor %}
+  </div>
+  <div class="card stat">
+    <div class="label">This month saved</div>
+    <div class="value small-value">{{ month.savings }}</div>
+    <div class="small faint">income {{ month.income }} · spent {{ month.expenses }}{% if month.savings_rate_percent %} · {{ month.savings_rate_percent }}%{% endif %}</div>
+  </div>
+  <div class="card stat {{ 'attention' if queue.counts.pending_operations }}">
+    <a href="/review"><div class="label">Proposals awaiting you</div><div class="value">{{ queue.counts.pending_operations }}</div></a>
+  </div>
+  <div class="card stat {{ 'attention' if queue.counts.unmatched_lines }}">
+    <a href="/lines"><div class="label">Unmatched statement lines</div><div class="value">{{ queue.counts.unmatched_lines }}</div></a>
+  </div>
+  <div class="card stat {{ 'attention' if queue.counts.reconciliation_exceptions or queue.counts.issues }}">
+    <a href="/reconciliations"><div class="label">Exceptions</div><div class="value">{{ queue.counts.reconciliation_exceptions + queue.counts.issues }}</div></a>
+  </div>
+</div>
+
+<h2>Recent activity</h2>
+{% if recent %}
+<div class="card table-wrap">
+  <table>
+    <thead><tr><th>Status</th><th>Operation</th><th>Proposed by</th><th>Confidence</th><th>When</th></tr></thead>
+    <tbody>
+    {% for op in recent %}
+      <tr>
+        <td><span class="badge {{ op.status }}">{{ op.status }}</span></td>
+        <td><a href="/operations/{{ op.id }}">{{ op.summary }}</a></td>
+        <td>{{ m.actor_badge(op.actor) }}</td>
+        <td>{{ m.confidence(op.confidence) }}</td>
+        <td class="faint small">{{ op.proposed_at }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card empty"><strong>An empty book</strong>Open accounts and import a statement with the CLI: <code>wealthbraid open …</code>, <code>wealthbraid import csv …</code></div>
+{% endif %}
+{% endblock %}

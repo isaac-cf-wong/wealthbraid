@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Trace {{ t.record.id }}{% endblock %}
+{% block content %}
+<h1>Provenance</h1>
+<p class="lede"><code>{{ t.record.id }}</code> · {{ t.record.kind }} · recorded {{ t.record.recorded_at }} by {{ m.actor_badge(t.record.actor) }}</p>
+
+{% for issue in t.issues %}<div class="error-box" role="alert">{{ issue }}</div>{% endfor %}
+
+<div class="grid-2">
+  <section class="card">
+    <h3>Where it came from</h3>
+    {% if t.operation %}
+      {% set op = t.operation %}
+      <ul class="timeline">
+        {% for ev in t.evidence or [] %}<li>Evidence <a href="/evidence/{{ ev.id }}">{{ ev.filename }}</a> <span class="faint small">sha256 {{ ev.sha256[:12] }}…</span></li>{% endfor %}
+        {% for line in (t.lines if t.lines is defined and t.lines and t.lines[0] is mapping else []) %}<li>Statement line {{ m.record_link(line.id) }}: {{ line.date }} {{ line.amount }} {{ line.commodity }} “{{ line.description }}”</li>{% endfor %}
+        <li>Proposed by {{ m.actor_badge(op.actor) }} via <strong>{{ op.tool }}</strong> ({{ m.confidence(op.confidence) }})<div class="reasoning">{{ op.reasoning }}</div><a href="/operations/{{ op.id }}" class="small">operation {{ op.id }}</a></li>
+        <li>{% if op.decided_by %}<span class="badge {{ op.status }}">{{ op.status }}</span> by {{ m.actor_badge(op.decided_by) }}{% if op.decision_note %} — “{{ op.decision_note }}”{% endif %}{% else %}<span class="badge pending">pending</span>{% endif %}</li>
+      </ul>
+    {% else %}
+      <p class="muted">This record is part of the approval workflow itself.</p>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h3>What happened since</h3>
+    {% if t.versions is defined %}
+      <ul class="timeline">
+        {% for v in t.versions %}
+          <li>{{ m.record_link(v.id) }} <span class="small faint">{{ v.kind }} · {{ v.recorded_at }}</span>{% if v.reason %}<div class="small">“{{ v.reason }}”</div>{% endif %}</li>
+        {% endfor %}
+      </ul>
+      <p class="small">Current version: {% if t.current_version %}{{ m.record_link(t.current_version) }}{% else %}<span class="badge rejected">voided</span>{% endif %}</p>
+    {% elif t.matched_by is defined %}
+      <p>{% if t.matched_by %}Accounted for by {{ m.record_link(t.matched_by) }}{% else %}<span class="badge pending">not yet matched</span>{% endif %}</p>
+    {% elif t.cited_by_operations is defined %}
+      <p class="small">{{ t.lines | length }} statement lines; cited by {{ t.cited_by_operations | length }} operations.</p>
+    {% else %}
+      <p class="muted small">No later records refer to this one.</p>
+    {% endif %}
+    {% if t.notes %}
+      <h3>Explanations</h3>
+      {% for note in t.notes %}
+        <div class="reasoning">{{ note.data.text }}<div class="small faint">{{ m.actor_badge(note.actor) }} · {{ note.recorded_at }}{% if note.data.confidence is defined %} · {{ m.confidence(note.data.confidence) }}{% endif %}</div></div>
+      {% endfor %}
+    {% endif %}
+  </section>
+</div>
+
+<h2>Record as stored</h2>
+<div class="card"><pre class="mono small">{{ t.record | tojson(indent=2) }}</pre></div>
+{% endblock %}

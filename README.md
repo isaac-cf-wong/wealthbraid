@@ -1,24 +1,104 @@
-# Python Project Template
+# wealthbraid
 
-[![Python CI](https://github.com/isaac-cf-wong/python-package-template/actions/workflows/ci.yml/badge.svg)](https://github.com/isaac-cf-wong/python-package-template/actions/workflows/ci.yml)
-[![pre-commit.ci status](https://results.pre-commit.ci/badge/github/isaac-cf-wong/python-package-template/main.svg)](https://results.pre-commit.ci/latest/github/isaac-cf-wong/python-package-template/main)
-[![Documentation Status](https://github.com/isaac-cf-wong/python-package-template/actions/workflows/documentation.yml/badge.svg)](https://isaac-cf-wong.github.io/python-package-template/)
-[![codecov](https://codecov.io/gh/isaac-cf-wong/python-package-template/graph/badge.svg?token=COF8341N60)](https://codecov.io/gh/isaac-cf-wong/python-package-template)
-[![PyPI Version](https://img.shields.io/pypi/v/package-name-placeholder)](https://pypi.org/project/package-name-placeholder/)
-[![Python Versions](https://img.shields.io/pypi/pyversions/package-name-placeholder)](https://pypi.org/project/package-name-placeholder/)
+[![Python CI](https://github.com/isaac-cf-wong/wealthbraid/actions/workflows/ci.yml/badge.svg)](https://github.com/isaac-cf-wong/wealthbraid/actions/workflows/ci.yml)
+[![Documentation Status](https://github.com/isaac-cf-wong/wealthbraid/actions/workflows/documentation.yml/badge.svg)](https://isaac-cf-wong.github.io/wealthbraid/)
 [![License](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](LICENSE)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![DOI](https://zenodo.org/badge/924023559.svg)](https://doi.org/10.5281/zenodo.18017404)
-[![SPEC 0 — Minimum Supported Dependencies](https://img.shields.io/badge/SPEC-0-green?labelColor=%23004811&color=%235CA038)](https://scientific-python.org/specs/spec-0000/)
 
-This project is a template for creating Python packages with a standardized
-structure and configuration. It includes the configurations for various
-development tools such as linters, formatters, type checkers, and test runners.
+**wealthbraid** is a local-first, AI-native personal wealth manager built on an
+append-only, double-entry ledger stored in human-readable files.
 
-## Getting started
+AI agents analyze your finances and propose changes through a CLI. You review
+explanations, exceptions, reconciliations, and proposals in a local web UI.
+Nothing an agent proposes changes a balance until you approve it. Every number
+can be traced back to the evidence, the reasoning, and the decision behind it.
 
-Use **Use this template** on GitHub, then read
-[`docs/template_documentation/`](docs/template_documentation/) — onboarding,
-user guide, and development notes in one place. Delete that directory and the
-**Template documentation** `nav` block in `zensical.toml` when you no longer
-need them. Develop your library under `src/`.
+- **Append-only and rebuildable.** The book is a directory of JSON Lines
+  segments plus the original documents. Records are never overwritten.
+  Corrections are new records linked to what they supersede. All state is
+  rebuilt from these files, and `wealthbraid verify` checks every content hash,
+  the hash chain, and every evidence digest.
+- **Double-entry and exact.** Every entry balances per commodity. Amounts are
+  decimals, never floats. Multi-currency valuation uses recorded prices.
+- **Provenance for every change.** Every change is an _operation_. It records
+  the actor, inputs, evidence, reasoning summary, confidence, proposed records,
+  approval status, and resulting record ids.
+- **Humans approve sensitive changes.** Only a `human:` actor can approve, and
+  every command that writes must name its actor explicitly. Only evidence and
+  notes, which neither change balances nor decide what enters the book, may be
+  applied automatically by policy. Imported statement lines wait for approval.
+  Approval re-checks the proposal against the book as it is at that moment.
+- **Private by design.** No telemetry and no network calls. wealthbraid never
+  calls a model provider itself. The web UI serves only loopback clients and
+  loads no external assets.
+
+## Installation
+
+```bash
+uv tool install wealthbraid      # or: pip install wealthbraid
+# from a checkout:
+uv sync && uv run wealthbraid --help
+```
+
+## A month in wealthbraid
+
+```bash
+wealthbraid init ~/finances --name "Household" --currency EUR --user alice
+cd ~/finances && git init        # optional; the log only ever grows
+
+# You set up accounts. Every write names its actor; --actor and --book go before the command.
+wealthbraid --actor human:alice open Assets:Bank:Checking Income:Salary Expenses:Groceries --date 2026-01-01 --approve
+
+# An agent imports and categorizes
+export WEALTHBRAID_ACTOR=agent:claude
+wealthbraid import csv statement.csv --account Assets:Bank:Checking \
+  --date-column Date --amount-column Amount --description-column Description
+wealthbraid categorize                                   # rules from wealthbraid.toml
+wealthbraid categorize --assignments picks.json --reasoning "Merchant names are unambiguous."
+wealthbraid reconcile Assets:Bank:Checking --date 2026-08-31 --balance 6384.56
+
+# You review and decide, in the browser or the terminal
+wealthbraid serve                                        # http://127.0.0.1:8765
+wealthbraid review
+wealthbraid --actor human:alice ops approve opr_…   # the imported lines, then the categorization
+```
+
+Then ask questions of the book:
+
+```bash
+wealthbraid report networth
+wealthbraid report cashflow --from 2026-01-01 --to 2026-08-31
+wealthbraid explain change Assets:Bank:Checking --from 2026-08-01 --to 2026-08-31
+wealthbraid trace ent_…                 # evidence → statement line → proposal → decision → corrections
+wealthbraid scenario template > plan.toml && wealthbraid scenario run plan.toml
+wealthbraid verify
+```
+
+Every report includes the record id it was computed from. `--at <record>`
+reproduces a past view exactly.
+
+## Commands
+
+| Area       | Commands                                                                                 |
+| ---------- | ---------------------------------------------------------------------------------------- |
+| Book       | `init`, `status`, `verify`, `log`, `show`, `trace`, `schema`, `serve`                    |
+| Ledger     | `accounts`, `open`, `close`, `entries`, `add`, `correct`, `void`, `price`                |
+| Statements | `evidence add/list`, `import csv`, `lines`, `categorize`, `reconcile`, `reconciliations` |
+| Workflow   | `propose`, `review`, `ops list/show/approve/reject`, `note add`                          |
+| Analysis   | `report balances/income/networth/cashflow`, `explain change`, `scenario run/template`    |
+
+Every command accepts `--json`. See [the agent guide](docs/agent-guide.md) for
+the machine contract and [the architecture](docs/architecture.md) for the
+design.
+
+## Development
+
+```bash
+uv sync
+uv run pytest
+uv run ruff check src tests && uv run ruff format --check src tests
+```
+
+## License
+
+BSD 3-Clause. See [LICENSE](LICENSE).

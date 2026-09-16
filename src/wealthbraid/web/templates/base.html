@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="htmx-config" content='{"includeIndicatorStyles": false, "allowEval": false}'>
+  <title>{% block title %}{{ book.name }}{% endblock %} · wealthbraid</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/"><span class="brand-mark">wealthbraid</span><span class="brand-book">{{ book.name }}</span></a>
+    <nav class="nav" aria-label="Main">
+      {% set items = [
+        ("/", "Overview", None),
+        ("/review", "Review", nav_counts.pending_operations if nav_counts else None),
+        ("/lines", "Unmatched", nav_counts.unmatched_lines if nav_counts else None),
+        ("/reconciliations", "Reconciliations", nav_counts.reconciliation_exceptions if nav_counts else None),
+        ("/entries", "Ledger", None),
+        ("/reports", "Reports", None),
+        ("/operations", "History", None),
+        ("/verify", "Verify", nav_counts.issues if nav_counts else None),
+      ] %}
+      {% for href, label, count in items %}
+        <a href="{{ href }}" {% if path == href %}aria-current="page"{% endif %}>{{ label }}{% if count %}<span class="count">{{ count }}</span>{% endif %}</a>
+      {% endfor %}
+    </nav>
+    <span class="actor-chip" title="Decisions you make here are recorded under this identity">acting as <code>{{ actor }}</code></span>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

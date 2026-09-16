@@ -1,0 +1,13 @@
+{
+    "assets": [
+        {
+            "file": "htmx.min.js",
+            "name": "htmx.org",
+            "version": "2.0.4",
+            "source": "https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js",
+            "sha256": "69caefd0da92269066e725d7fe175e26b9d50c962e3056459c0c477154cdb9d3",
+            "license": "0BSD",
+            "note": "upstream bytes plus one trailing newline added by the end-of-file hook"
+        }
+    ]
+}

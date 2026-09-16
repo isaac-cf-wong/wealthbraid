@@ -1,0 +1,64 @@
+{% import "_macros.html" as m %}
+<article class="card op" id="op-{{ op.id }}">
+  <div class="op-head">
+    <div>
+      <h3 class="op-title"><a href="/operations/{{ op.id }}">{{ op.summary }}</a></h3>
+      <div class="op-meta">
+        <span class="badge {{ op.status }}">{{ op.status }}</span>
+        {{ m.actor_badge(op.actor) }}
+        <span>{{ op.tool }}</span>
+        {{ m.confidence(op.confidence) }}
+        <span class="faint">{{ op.proposed_at }}</span>
+      </div>
+    </div>
+    <code class="faint small">{{ op.id }}</code>
+  </div>
+
+  <div class="reasoning"><div class="label">Reasoning</div>{{ op.reasoning }}</div>
+
+  {% if op.evidence %}
+    <p class="small">Evidence:
+      {% for ev in op.evidence %}<a href="/evidence/{{ ev.id }}">{{ ev.filename }}</a> <span class="faint">({{ ev.sha256[:10] }}…)</span>{% if not loop.last %}, {% endif %}{% endfor %}
+    </p>
+  {% endif %}
+
+  {% for change in op.changes %}
+    <section class="change">
+      <div class="change-kind">{{ change.kind }}</div>
+      {% if change.rationale %}<div class="change-rationale">{{ change.rationale }}</div>{% endif %}
+      {% if change.kind == "entry" %}
+        {{ m.postings(change.data) }}
+        {% for line in change.lines %}
+          <div class="small faint">matches statement line {{ m.record_link(line.id) }}: {{ line.date }} {{ line.amount }} {{ line.commodity }} “{{ line.description }}”</div>
+        {% endfor %}
+      {% elif change.kind == "correction" %}
+        <p class="small">Correcting {{ m.record_link(change.data.target) }} — <em>{{ change.data.reason }}</em></p>
+        <div class="diff">
+          <div class="before"><h4>Current</h4>{% if change.before %}{{ m.postings(change.before) }}{% else %}<span class="small">not a current entry</span>{% endif %}</div>
+          <div class="after"><h4>{{ "Proposed" if change.after else "Voided" }}</h4>{% if change.after %}{{ m.postings(change.after) }}{% else %}<span class="small">The entry will no longer count toward any balance. It stays in the log.</span>{% endif %}</div>
+        </div>
+      {% else %}
+        <dl class="kv">
+          {% for key, value in change.data.items() %}<dt>{{ key }}</dt><dd>{% if value is string or value is number %}{{ value }}{% else %}<code>{{ value | tojson }}</code>{% endif %}</dd>{% endfor %}
+        </dl>
+      {% endif %}
+    </section>
+  {% endfor %}
+
+  {% if error %}<div class="error-box" role="alert">{{ error }}</div>{% endif %}
+
+  {% if op.status == "pending" %}
+    <form class="decide" method="post" action="/operations/{{ op.id }}/decide" hx-post="/operations/{{ op.id }}/decide" hx-target="#op-{{ op.id }}" hx-swap="outerHTML">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      {% if op.stale %}<span class="warning">The book changed since this was proposed; approval re-checks it.</span>{% endif %}
+      <input type="text" name="note" placeholder="Note (optional)" aria-label="Decision note">
+      <button class="btn primary" name="verdict" value="approve">Approve</button>
+      <button class="btn danger" name="verdict" value="reject">Reject</button>
+    </form>
+  {% elif op.decision %}
+    <div class="decide small muted">
+      {{ op.decision.data.verdict }}d by {{ m.actor_badge(op.decision.actor) }} at {{ op.decision.recorded_at }}{% if op.decision.data.note %} — “{{ op.decision.data.note }}”{% endif %}
+      {% if op.results %}· results: {% for r in op.results %}{{ m.record_link(r) }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}
+    </div>
+  {% endif %}
+</article>

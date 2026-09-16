@@ -1,0 +1,2 @@
+# Vendored third-party asset: keep its bytes exactly as recorded in VENDOR.json
+src/wealthbraid/web/static/htmx.min.js -text

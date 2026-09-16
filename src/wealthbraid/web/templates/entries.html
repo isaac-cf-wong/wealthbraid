@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Ledger{% endblock %}
+{% block content %}
+<h1>Ledger</h1>
+<p class="lede">Current version of every entry, newest first. Open an entry to see its evidence, the operation behind it, and any corrections.</p>
+<form class="filters" method="get">
+  <label>Account
+    <select name="account">
+      <option value="">all accounts</option>
+      {% for a in accounts %}<option {% if account == a %}selected{% endif %}>{{ a }}</option>{% endfor %}
+    </select>
+  </label>
+  <button class="btn">Filter</button>
+</form>
+<div class="card table-wrap">
+  <table>
+    <thead><tr><th>Date</th><th>Description</th><th>Postings</th><th></th></tr></thead>
+    <tbody>
+    {% for v in entries %}
+      <tr>
+        <td class="small">{{ v.data.date }}</td>
+        <td>{{ v.data.payee or "" }}<div class="small muted">{{ v.data.narration or "" }}</div></td>
+        <td>
+          <table class="postings">
+            {% for p in v.data.postings %}<tr><td>{{ p.account }}</td><td class="num">{{ p.amount }}</td><td>{{ p.commodity }}</td></tr>{% endfor %}
+          </table>
+        </td>
+        <td class="small"><a href="/trace/{{ v.id }}">trace</a>{% if v.history | length > 1 %} <span class="badge">corrected</span>{% endif %}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="4" class="empty">No entries.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
