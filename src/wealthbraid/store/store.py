@@ -81,8 +81,7 @@ def _process_alive(pid: int) -> bool:
 
 
 def _windows_process_alive(pid: int) -> bool:  # pragma: no cover - exercised on Windows CI
-    import ctypes  # noqa: PLC0415
-    from ctypes import wintypes  # noqa: PLC0415
+    import ctypes.wintypes  # noqa: PLC0415
 
     process_query_limited_information = 0x1000
     still_active = 259
@@ -92,7 +91,7 @@ def _windows_process_alive(pid: int) -> bool:  # pragma: no cover - exercised on
         # Access denied means the process exists but belongs to someone else.
         return ctypes.get_last_error() == 5  # noqa: PLR2004 - ERROR_ACCESS_DENIED
     try:
-        code = wintypes.DWORD()
+        code = ctypes.wintypes.DWORD()
         if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
             return True
         return code.value == still_active
