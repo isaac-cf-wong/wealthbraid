@@ -184,8 +184,12 @@ def categorize(
     already_proposed = state.pending_line_proposals()
     if assignments is None:
         candidates = [line_id for line_id in unmatched if line_id not in already_proposed]
-        chosen = suggest_by_rules(state, book.config.rules, candidates)
+        usable = [rule for rule in book.config.rules if rule.account in state.accounts]
+        skipped = [rule for rule in book.config.rules if rule.account not in state.accounts]
+        chosen = suggest_by_rules(state, usable, candidates)
         inputs: dict[str, Any] = {"source": "rules", "rules": [rule.to_json() for rule in book.config.rules]}
+        if skipped:
+            inputs["skipped_rules"] = [rule.to_json() for rule in skipped]
         reasoning = reasoning or "Statement lines matched categorization rules from the book settings."
     else:
         if not reasoning:

@@ -18,7 +18,7 @@ from pydantic import ValidationError as PydanticValidationError
 from wealthbraid.engine.account import parse_account_name
 from wealthbraid.engine.errors import EngineError
 from wealthbraid.engine.money import Commodity
-from wealthbraid.errors import ValidationError
+from wealthbraid.errors import UsageError, ValidationError
 from wealthbraid.store.records import RecordKind
 
 
@@ -123,10 +123,17 @@ class EntryData(_Model):
 
 
 class CorrectionData(_Model):
-    """Supersede the current version of an entry with a replacement, or void it."""
+    """Supersede the current version of a record with a replacement, or void it.
 
-    target: str = Field(description="The current version id of the entry (an ent_ or cor_ id).")
-    replacement: EntryData | None = Field(default=None, description="The corrected entry; omit to void.")
+    A correction can target an entry, a statement line, an ``account.open``, or an
+    ``account.close``. The replacement must be a payload of the target's kind; it
+    is validated against that kind when the correction is applied.
+    """
+
+    target: str = Field(description="The current version id of the entry, line, or account record to correct.")
+    replacement: dict[str, Any] | None = Field(
+        default=None, description="The corrected payload, of the same kind as the target; omit to void."
+    )
     reason: str = Field(min_length=1)
 
 
@@ -277,12 +284,12 @@ def json_schema(kind: str = "operation") -> dict[str, Any]:
         The JSON Schema dictionary.
 
     Raises:
-        ValidationError: If the kind is unknown.
+        UsageError: If the kind is unknown.
 
     """
     try:
         record_kind = RecordKind(kind)
     except ValueError as exc:
         valid = ", ".join(k.value for k in RecordKind)
-        raise ValidationError(f"unknown record kind {kind!r}; expected one of: {valid}") from exc
+        raise UsageError(f"unknown record kind {kind!r}; expected one of: {valid}") from exc
     return DATA_MODELS[record_kind].model_json_schema()

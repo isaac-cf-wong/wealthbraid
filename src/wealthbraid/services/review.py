@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from wealthbraid.book.state import BookState
-from wealthbraid.services.reconcile import reconciliation_status
+from wealthbraid.services.reconcile import RESOLVED_STATUSES, reconciliation_status
 from wealthbraid.services.reports import basis
 
 LOW_CONFIDENCE = 0.6
@@ -61,7 +61,7 @@ def review_queue(state: BookState) -> dict[str, Any]:
         }
         for line_id in state.unmatched_lines()
     ]
-    reconciliations = [row for row in reconciliation_status(state) if row["status"] != "balanced"]
+    reconciliations = [row for row in reconciliation_status(state) if row["status"] not in RESOLVED_STATUSES]
     issues = [{"record": issue.record, "message": issue.message} for issue in state.issues]
     return {
         "basis": basis(state),

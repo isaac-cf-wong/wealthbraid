@@ -18,8 +18,10 @@ from wealthbraid.cli.common import (
     emit,
     format_amounts,
     handle_errors,
+    json_wanted,
     open_book,
     parse_date,
+    read_state,
     resolve_actor,
     table,
 )
@@ -69,7 +71,7 @@ def balances_command(
     as_json: JsonOption = False,
 ) -> None:
     """Account balances with totals per account type."""
-    state = open_book().state(at=at)
+    state = read_state(at)
     report = balances(state, as_of=parse_date(as_of, "--as-of") if as_of else None, account=account)
     emit(
         report,
@@ -90,7 +92,7 @@ def income_command(
     as_json: JsonOption = False,
 ) -> None:
     """Income statement for a period."""
-    report = income_statement(open_book().state(at=at), start=parse_date(start, "--from"), end=parse_date(end, "--to"))
+    report = income_statement(read_state(at), start=parse_date(start, "--from"), end=parse_date(end, "--to"))
 
     def text(r: dict[str, Any]) -> str:
         rows = [("Income", "")] + [(f"  {x['account']}", format_amounts(x["amount"])) for x in r["income"]]
@@ -115,7 +117,7 @@ def networth_command(
     """Net worth valued in one currency using recorded prices."""
     book = open_book()
     report = net_worth(
-        book.state(at=at),
+        read_state(at, book),
         as_of=parse_date(as_of, "--as-of", default=_today()),
         currency=currency or book.config.currency,
     )
@@ -132,8 +134,15 @@ def networth_command(
             "",
             f"Assets {r['assets']}  Liabilities {r['liabilities']}  Net worth {r['net_worth']} {r['currency']}",
         ]
-        if r["unvalued"]:
-            lines.append(f"Not valued (no price): {format_amounts(r['unvalued'])}")
+        if r["unvalued_assets"]:
+            lines.append(f"Assets not valued (no price): {format_amounts(r['unvalued_assets'])}")
+        if r["unvalued_liabilities"]:
+            lines.append(f"Liabilities not valued (no price): {format_amounts(r['unvalued_liabilities'])}")
+        lines.extend(
+            f"Price {p['base']}/{p['quote']} {p['rate']} from {p['date']} ({p['age_days']} days old)"
+            for p in r["prices_used"]
+        )
+        lines.extend(f"WARNING: {w}" for w in r["price_warnings"])
         return "\n".join(lines)
 
     emit(report, as_json, text)
@@ -150,7 +159,7 @@ def cashflow_command(
     """Monthly income, spending, savings, and savings rate."""
     book = open_book()
     report = cashflow(
-        book.state(at=at),
+        read_state(at, book),
         start=parse_date(start, "--from"),
         end=parse_date(end, "--to"),
         currency=currency or book.config.currency,
@@ -181,7 +190,7 @@ def explain_change_command(
     """Explain why an account's balance changed over a period, by counter account."""
     book = open_book()
     first, last = parse_date(start, "--from"), parse_date(end, "--to")
-    result = explain_change(book.state(at=at), account=account, start=first, end=last)
+    result = explain_change(read_state(at, book), account=account, start=first, end=last)
 
     def text(r: dict[str, Any]) -> str:
         lines = [
@@ -228,7 +237,7 @@ def scenario_run_command(
         raise UsageError(f"cannot parse {file}: {exc}") from exc
     spec = parse_spec(raw)
     book = open_book()
-    result = run_scenario(book.state(at=at), spec, default_currency=book.config.currency)
+    result = run_scenario(read_state(at, book), spec, default_currency=book.config.currency)
 
     def text(r: dict[str, Any]) -> str:
         lines = [f"Scenario {r['scenario']} ({r['currency']}), inputs sha256 {r['inputs_sha256'][:12]}…"]
@@ -273,9 +282,12 @@ def scenario_run_command(
 
 
 @handle_errors
-def scenario_template_command() -> None:
+def scenario_template_command(as_json: JsonOption = False) -> None:
     """Print an annotated scenario file to start from."""
-    typer.echo(SCENARIO_TEMPLATE, nl=False)
+    if json_wanted(as_json):
+        emit({"format": "toml", "template": SCENARIO_TEMPLATE}, as_json=True)
+    else:
+        typer.echo(SCENARIO_TEMPLATE, nl=False)
 
 
 def register(app: typer.Typer) -> None:

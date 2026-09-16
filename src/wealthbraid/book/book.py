@@ -9,7 +9,7 @@ An operation's changes are written only after a decision:
 
 * a human approves or rejects it (``decide``), or
 * policy auto-approves it, which is allowed only when every change is
-  non-sensitive (evidence, statement lines, notes) and the book allows it.
+  non-sensitive (evidence, notes) and the book allows it.
 
 Approval re-validates against the book as it is *now*; if the book moved on and
 the changes no longer apply, nothing is written. Agents can never approve.
@@ -42,13 +42,14 @@ from wealthbraid.book.state import (
     POLICY_ACTOR,
     BookState,
     OperationState,
+    has_refs,
     resolve_refs,
 )
-from wealthbraid.errors import ConflictError, NotFoundError, PolicyError, ValidationError
+from wealthbraid.errors import ConflictError, IntegrityError, NotFoundError, PolicyError, ValidationError
 from wealthbraid.store.records import Record, RecordKind
 from wealthbraid.store.store import PendingAppend, RecordStore, format_timestamp, utc_now
 
-_ACTOR_RE = re.compile(r"^(human|agent):[A-Za-z0-9._-]+$")
+_ACTOR_RE = re.compile(r"\A(human|agent):[A-Za-z0-9._-]+\Z")
 _DRY_RUN_APPROVER = "human:dry-run"
 
 
@@ -68,16 +69,6 @@ def check_actor(actor: str) -> str:
     if not _ACTOR_RE.match(actor):
         raise PolicyError(f"invalid actor {actor!r}; use human:<name> or agent:<name>")
     return actor
-
-
-def _has_refs(value: Any) -> bool:
-    if isinstance(value, str):
-        return len(value) > 1 and value[0] == "$" and value[1:].isdigit()
-    if isinstance(value, list):
-        return any(_has_refs(item) for item in value)
-    if isinstance(value, Mapping):
-        return any(_has_refs(item) for item in value.values())
-    return False
 
 
 class Book:
@@ -185,7 +176,7 @@ class Book:
             inputs=inputs,
         )
         with self.store.lock():
-            state = self.state()
+            state = self._writable_state()
             operation_data = dump_data(operation.model_copy(update={"base": state.head.id if state.head else None}))
             sensitive = any(RecordKind(change.kind) not in NON_SENSITIVE_KINDS for change in operation.changes)
             if approve:
@@ -241,7 +232,7 @@ class Book:
         if verdict not in ("approve", "reject"):
             raise ValidationError(f"verdict must be 'approve' or 'reject', not {verdict!r}")
         with self.store.lock():
-            state = self.state()
+            state = self._writable_state()
             operation = state.operations.get(operation_id)
             if operation is None:
                 raise NotFoundError(f"operation not found: {operation_id}")
@@ -312,6 +303,16 @@ class Book:
 
     # -- helpers ------------------------------------------------------------
 
+    def _writable_state(self) -> BookState:
+        state = self.state()
+        if state.integrity_issues:
+            first = state.integrity_issues[0]
+            raise IntegrityError(
+                f"refusing to write: {len(state.integrity_issues)} record(s) fail integrity checks "
+                f"(first: {first.record}: {first.message}); run `wealthbraid verify`"
+            )
+        return state
+
     def _operation(self, operation_id: str) -> OperationState:
         return self.state().operations[operation_id]
 
@@ -329,7 +330,7 @@ class Book:
         normalised = []
         for index, raw in enumerate(changes):
             change = parse_data_change(raw, index)
-            if not _has_refs(change.data):
+            if not has_refs(change.data):
                 change = change.model_copy(update={"data": dump_data(parse_data(RecordKind(change.kind), change.data))})
             normalised.append(change)
         try:

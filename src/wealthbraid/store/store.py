@@ -4,13 +4,16 @@ Layout of a book directory::
 
     wealthbraid.toml                 settings (see wealthbraid.book.config)
     records/2026/09.jsonl            append-only log segments, one record per line
+    records/HEAD                     anchor: sequence number and id of the newest record
     evidence/sha256/ab/abcdef…       immutable evidence blobs named by digest
     .wealthbraid/                    local, regenerable state (lock file); git-ignored
 
 Records are only ever appended. A write takes an exclusive lock, computes the
 new records' identifiers against the current head of the chain, and appends all
-of them in a single write followed by ``fsync``. Nothing in this module can
-modify or delete an existing record or evidence blob.
+of them in a single write followed by ``fsync``, then updates the head anchor.
+The anchor lets verification notice records deleted from the end of the log,
+which the hash chain alone cannot. Nothing in this module can modify or delete
+an existing record or evidence blob.
 """
 
 from __future__ import annotations
@@ -28,9 +31,38 @@ from wealthbraid.errors import ConflictError, IntegrityError, NotFoundError
 from wealthbraid.store.records import Record, RecordKind
 
 RECORDS_DIR = "records"
+ANCHOR_NAME = "HEAD"
 EVIDENCE_DIR = "evidence"
 STATE_DIR = ".wealthbraid"
 _LOCK_NAME = "lock"
+
+
+def _fsync_dir(path: Path) -> None:
+    """Flush a directory entry so a new or renamed file survives power loss."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _read_holder(lock_path: Path) -> int | None:
+    try:
+        return int(lock_path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OverflowError:
+        return False
+    return True
 
 
 def utc_now() -> dt.datetime:
@@ -103,6 +135,59 @@ class RecordStore:
             return []
         return sorted(self.records_dir.glob("[0-9][0-9][0-9][0-9]/[0-9][0-9].jsonl"))
 
+    @property
+    def anchor_path(self) -> Path:
+        """Return the path of the head anchor file.
+
+        Returns:
+            ``records/HEAD``.
+
+        """
+        return self.records_dir / ANCHOR_NAME
+
+    def read_anchor(self) -> dict[str, Any] | None:
+        """Read the head anchor.
+
+        Returns:
+            ``{"seq": int, "id": str}``, or ``None`` if no anchor has been written.
+
+        Raises:
+            IntegrityError: If the anchor exists but is unreadable.
+
+        """
+        if not self.anchor_path.is_file():
+            return None
+        try:
+            anchor = json.loads(self.anchor_path.read_text(encoding="utf-8"))
+            return {"seq": int(anchor["seq"]), "id": str(anchor["id"])}
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            raise IntegrityError(f"{self.anchor_path.relative_to(self.root)} is unreadable: {exc}") from exc
+
+    def stray_files(self) -> list[Path]:
+        """Return files under ``records/`` that are neither segments nor the anchor.
+
+        Returns:
+            Sorted paths relative to the book root.
+
+        """
+        if not self.records_dir.is_dir():
+            return []
+        expected = set(self.segments()) | {self.anchor_path}
+        return sorted(
+            path.relative_to(self.root)
+            for path in self.records_dir.rglob("*")
+            if path.is_file() and path not in expected
+        )
+
+    def _write_anchor(self, record: Record) -> None:
+        temporary = self.anchor_path.with_suffix(".tmp")
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps({"seq": record.seq, "id": record.id}) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(self.anchor_path)
+        _fsync_dir(self.records_dir)
+
     # -- reading ----------------------------------------------------------
 
     def iter_records(self) -> Iterator[Record]:
@@ -162,25 +247,42 @@ class RecordStore:
         Yields:
             Nothing; the lock is held for the duration of the block.
 
+        A lock left behind by a process that no longer exists is recovered
+        automatically. On release, the lock file is removed only if it still
+        names this process.
+
         Raises:
-            ConflictError: If another process holds the lock.
+            ConflictError: If another live process holds the lock.
 
         """
         state = self.root / STATE_DIR
         state.mkdir(parents=True, exist_ok=True)
         lock_path = state / _LOCK_NAME
+        me = str(os.getpid())
+        for _ in range(2):
+            try:
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                break
+            except FileExistsError:
+                holder = _read_holder(lock_path)
+                if holder is not None and not _process_alive(holder):
+                    # The writer that held the lock has exited without releasing it.
+                    lock_path.unlink(missing_ok=True)
+                    continue
+                who = f"process {holder}" if holder is not None else "an unknown writer"
+                raise ConflictError(
+                    f"The book is locked by {who} ({lock_path}); wait for it to finish, "
+                    "or remove the file if that process is not a wealthbraid writer"
+                ) from None
+        else:
+            raise ConflictError(f"could not acquire the book lock ({lock_path})")
         try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError as exc:
-            raise ConflictError(
-                f"The book is locked by another writer ({lock_path}); remove the file if no writer is running"
-            ) from exc
-        try:
-            os.write(fd, str(os.getpid()).encode())
+            os.write(fd, me.encode())
             os.close(fd)
             yield
         finally:
-            lock_path.unlink(missing_ok=True)
+            if _read_holder(lock_path) == int(me):
+                lock_path.unlink(missing_ok=True)
 
     def begin(self, *, recorded_at: str | None = None) -> PendingAppend:
         """Start collecting records to append against the current head.
@@ -332,11 +434,18 @@ class PendingAppend:
         """
         if not self.records:
             return []
-        segment = self._store._segment_for(self._recorded_at)
-        segment.parent.mkdir(parents=True, exist_ok=True)
-        payload = "".join(record.to_line() + "\n" for record in self.records)
-        with segment.open("a", encoding="utf-8") as handle:
+        store = self._store
+        segment = store._segment_for(self._recorded_at)
+        created = not segment.exists()
+        if created:
+            segment.parent.mkdir(parents=True, exist_ok=True)
+            _fsync_dir(store.records_dir)
+        payload = "".join(record.to_line() + "\n" for record in self.records).encode("utf-8")
+        with segment.open("ab") as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
+        if created:
+            _fsync_dir(segment.parent)
+        store._write_anchor(self.records[-1])
         return list(self.records)

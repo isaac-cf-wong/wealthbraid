@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ipaddress
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -12,7 +11,7 @@ from wealthbraid.book.book import Book
 from wealthbraid.book.config import init_book
 from wealthbraid.book.schema import json_schema
 from wealthbraid.book.verify import verify_book
-from wealthbraid.cli.common import AtOption, JsonOption, emit, handle_errors, open_book, table
+from wealthbraid.cli.common import AtOption, JsonOption, emit, handle_errors, open_book, read_state, table
 from wealthbraid.errors import IntegrityError, NotFoundError, PolicyError, UsageError
 from wealthbraid.services.explain import trace
 from wealthbraid.services.review import review_queue
@@ -25,10 +24,16 @@ def init_command(
     name: Annotated[str, typer.Option(help="Book name.")] = "My wealth",
     currency: Annotated[str, typer.Option(help="Reporting currency.")] = "EUR",
     user: Annotated[str, typer.Option(help="Your name; approvals are recorded as human:<user>.")] = "owner",
+    force: Annotated[bool, typer.Option(help="Create the book even if the directory already has files.")] = False,
     as_json: JsonOption = False,
 ) -> None:
     """Create a new, empty book."""
-    root = init_book(path.resolve(), name=name, currency=currency, user=user)
+    root = path.resolve()
+    if root.exists() and not root.is_dir():
+        raise UsageError(f"{root} exists and is not a directory")
+    if root.is_dir() and any(root.iterdir()) and not force and not (root / "wealthbraid.toml").exists():
+        raise UsageError(f"{root} is not empty; choose an empty directory or pass --force")
+    root = init_book(root, name=name, currency=currency, user=user)
     emit(
         {"book": str(root), "currency": currency, "user": f"human:{user}"},
         as_json,
@@ -40,10 +45,10 @@ def init_command(
 
 
 @handle_errors
-def status_command(as_json: JsonOption = False) -> None:
+def status_command(at: AtOption = None, as_json: JsonOption = False) -> None:
     """Summarise the book: records, accounts, entries, and what needs review."""
     book = open_book()
-    state = book.state()
+    state = read_state(at, book)
     queue = review_queue(state)
     data = {
         "book": str(book.root),
@@ -55,6 +60,7 @@ def status_command(as_json: JsonOption = False) -> None:
         "entries": len(state.entries),
         "evidence": len(state.evidence),
         "statement_lines": len(state.lines),
+        "integrity_issues": len(state.integrity_issues),
         "needs_review": queue["counts"],
     }
 
@@ -115,11 +121,12 @@ def schema_command(
 @handle_errors
 def log_command(
     kind: Annotated[str | None, typer.Option(help="Only records of this kind.")] = None,
-    limit: Annotated[int, typer.Option(help="Show at most this many (latest first).")] = 20,
+    limit: Annotated[int, typer.Option(min=0, help="Show at most this many (latest first).")] = 20,
+    at: AtOption = None,
     as_json: JsonOption = False,
 ) -> None:
     """List recent records, newest first."""
-    state = open_book().state()
+    state = read_state(at)
     if kind is not None and kind not in {k.value for k in RecordKind}:
         raise UsageError(f"unknown record kind {kind!r}; expected one of: {', '.join(k.value for k in RecordKind)}")
     records = [r for r in reversed(state.records) if kind is None or r.kind.value == kind][:limit]
@@ -140,7 +147,7 @@ def show_command(
     record_id: Annotated[str, typer.Argument(help="Record id.")], at: AtOption = None, as_json: JsonOption = False
 ) -> None:
     """Print a record exactly as stored."""
-    state = open_book().state(at=at)
+    state = read_state(at)
     record = state.by_id.get(record_id)
     if record is None:
         raise NotFoundError(f"record not found: {record_id}")
@@ -152,7 +159,7 @@ def trace_command(
     record_id: Annotated[str, typer.Argument(help="Record id.")], at: AtOption = None, as_json: JsonOption = False
 ) -> None:
     """Show where a record came from and what happened to it since."""
-    result = trace(open_book().state(at=at), record_id)
+    result = trace(read_state(at), record_id)
 
     def text(d: dict[str, Any]) -> str:
         record = d["record"]
@@ -188,29 +195,28 @@ def trace_command(
     emit(result, as_json, text)
 
 
+LOOPBACK_BIND_HOSTS = ("127.0.0.1", "localhost")
+
+
 @handle_errors
 def serve_command(
-    host: Annotated[str, typer.Option(help="Interface to bind; keep it on loopback.")] = "127.0.0.1",
-    port: Annotated[int, typer.Option(help="Port.")] = 8765,
-    allow_remote: Annotated[bool, typer.Option(help="Allow binding a non-loopback interface.")] = False,
-    as_json: JsonOption = False,
+    host: Annotated[str, typer.Option(help="Interface to bind: 127.0.0.1 or localhost.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(min=1, max=65535, help="Port.")] = 8765,
 ) -> None:
-    """Start the local web UI for reviewing and approving."""
+    """Start the local web UI for reviewing and approving (loopback only)."""
     import uvicorn  # noqa: PLC0415
 
     from wealthbraid.web.app import create_app  # noqa: PLC0415
 
-    try:
-        loopback = ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        loopback = host == "localhost"
-    if not loopback and not allow_remote:
+    if host not in LOOPBACK_BIND_HOSTS:
         raise PolicyError(
-            f"refusing to serve financial data on {host}; the UI has no authentication. Use --allow-remote to override"
+            f"refusing to serve on {host}: the web UI has no authentication and only runs on "
+            f"{' or '.join(LOOPBACK_BIND_HOSTS)}. To reach it from elsewhere, use an authenticated tunnel "
+            "such as `ssh -L 8765:127.0.0.1:8765`."
         )
     book = open_book()
-    typer.echo(f"wealthbraid web UI for {book.config.name}: http://{host}:{port}/  (Ctrl+C to stop)", err=True)
-    uvicorn.run(create_app(Book(book.root)), host=host, port=port, log_level="warning")
+    typer.echo(f"wealthbraid web UI for {book.config.name}: http://127.0.0.1:{port}/  (Ctrl+C to stop)", err=True)
+    uvicorn.run(create_app(Book(book.root), port=port), host="127.0.0.1", port=port, log_level="warning")
 
 
 def register(app: typer.Typer) -> None:

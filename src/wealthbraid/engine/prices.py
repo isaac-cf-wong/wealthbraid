@@ -96,22 +96,61 @@ class PriceDB:
             The conversion rate, or None if no path of prices connects them.
 
         """
+        found = self.path(base, quote, on)
+        if found is None:
+            return None
+        rate = _ONE
+        for step in found:
+            rate *= step.rate
+        return rate
+
+    def path(self, base: Commodity, quote: Commodity, on: dt.date) -> list[RateStep] | None:
+        """Return the conversion steps from ``base`` to ``quote`` as of a date.
+
+        Args:
+            base: The commodity to convert from.
+            quote: The commodity to convert to.
+            on: The as-of date.
+
+        Returns:
+            The steps in order (empty when ``base == quote``), or None if no path exists.
+
+        """
         if base == quote:
-            return _ONE
+            return []
         adjacency = self._adjacency(on)
-        queue: deque[tuple[Commodity, Decimal]] = deque([(base, _ONE)])
+        queue: deque[tuple[Commodity, list[RateStep]]] = deque([(base, [])])
         visited = {base}
         while queue:
-            node, accumulated = queue.popleft()
+            node, steps = queue.popleft()
             if node == quote:
-                return accumulated
+                return steps
             for neighbour in sorted(adjacency[node], key=lambda c: c.code):
                 if neighbour not in visited:
                     visited.add(neighbour)
-                    queue.append((neighbour, accumulated * adjacency[node][neighbour]))
+                    queue.append((neighbour, [*steps, adjacency[node][neighbour]]))
         return None
 
-    def _adjacency(self, on: dt.date) -> dict[Commodity, dict[Commodity, Decimal]]:
+    def latest(self, on: dt.date) -> dict[tuple[Commodity, Commodity], Price]:
+        """Return the most recent price for each ``(base, quote)`` pair on or before a date.
+
+        Args:
+            on: The as-of date.
+
+        Returns:
+            The latest price per directed pair.
+
+        """
+        best: dict[tuple[Commodity, Commodity], Price] = {}
+        for price in self._prices:
+            if price.date > on:
+                continue
+            key = (price.base, price.quote)
+            if key not in best or price.date > best[key].date:
+                best[key] = price
+        return best
+
+    def _adjacency(self, on: dt.date) -> dict[Commodity, dict[Commodity, RateStep]]:
         """Build the rate graph from the most recent prices as of a date.
 
         Direct edges use the latest ``base → quote`` price; inverse edges are
@@ -121,24 +160,31 @@ class PriceDB:
             on: The as-of date.
 
         Returns:
-            A mapping of commodity to its neighbours and the rate to each.
+            A mapping of commodity to its neighbours and the step to each.
 
         """
-        best: dict[tuple[Commodity, Commodity], tuple[dt.date, Decimal]] = {}
-        for price in self._prices:
-            if price.date > on:
-                continue
-            key = (price.base, price.quote)
-            if key not in best or price.date > best[key][0]:
-                best[key] = (price.date, price.rate.quantity)
-
-        adjacency: dict[Commodity, dict[Commodity, Decimal]] = defaultdict(dict)
-        for (edge_base, edge_quote), (_, edge_rate) in best.items():
-            adjacency[edge_base][edge_quote] = edge_rate
-        for (edge_base, edge_quote), (_, edge_rate) in best.items():
-            if edge_rate != 0 and edge_base not in adjacency[edge_quote]:
-                adjacency[edge_quote][edge_base] = _ONE / edge_rate
+        best = self.latest(on)
+        adjacency: dict[Commodity, dict[Commodity, RateStep]] = defaultdict(dict)
+        for (edge_base, edge_quote), price in best.items():
+            adjacency[edge_base][edge_quote] = RateStep(price.rate.quantity, price)
+        for (edge_base, edge_quote), price in best.items():
+            if price.rate.quantity != 0 and edge_base not in adjacency[edge_quote]:
+                adjacency[edge_quote][edge_base] = RateStep(_ONE / price.rate.quantity, price)
         return adjacency
+
+
+@dataclass(frozen=True)
+class RateStep:
+    """One conversion step and the recorded price it relies on.
+
+    Attributes:
+        rate: The multiplier applied in this step (the price's rate, or its inverse).
+        price: The recorded price the step uses.
+
+    """
+
+    rate: Decimal
+    price: Price
 
 
 def value_amount(amount: Amount, target: Commodity, prices: PriceDB, on: dt.date) -> Amount | None:

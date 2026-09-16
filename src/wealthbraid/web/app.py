@@ -4,26 +4,33 @@ The UI is a thin layer over the same services the CLI uses. It is meant to run
 on the loopback interface for the person who owns the book:
 
 * decisions are recorded as ``human:<user>`` from ``wealthbraid.toml``;
-* every state-changing request must carry the per-process CSRF token and come
-  from the same origin, so another web page cannot submit approvals;
-* the ``Host`` header must be a loopback name, which blocks DNS-rebinding;
+* requests must arrive from a loopback client address; the UI has no
+  authentication, so it refuses to serve anything else;
+* the ``Host`` header must be exactly ``127.0.0.1:<port>`` or ``localhost:<port>``,
+  which blocks DNS rebinding (this is not authentication);
+* every state-changing request must carry the per-process CSRF token and an
+  ``Origin`` or ``Referer`` naming this server, so another web page cannot
+  submit approvals;
+* every response, including server errors, carries a strict CSP and
+  ``Cache-Control: no-store``;
 * evidence is always served as a download, never rendered inline;
-* no asset is loaded from the network.
+* no asset is loaded from the network (htmx is vendored; see ``static/VENDOR.json``).
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import hmac
+import ipaddress
 import secrets
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from wealthbraid.book.book import Book
 from wealthbraid.book.state import BookState, OperationState
@@ -36,7 +43,54 @@ from wealthbraid.services.reports import balances, cashflow, income_statement, n
 from wealthbraid.services.review import review_queue
 
 _HERE = Path(__file__).parent
-LOOPBACK_HOSTS = ["127.0.0.1", "localhost", "::1", "[::1]"]
+LOOPBACK_NAMES = ("127.0.0.1", "localhost")
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "same-origin",
+    "Cache-Control": "no-store",
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; object-src 'none'; "
+        "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+    ),
+}
+
+
+def host_allowed(host: str | None, port: int | None) -> bool:
+    """Report whether a ``Host`` header names this loopback server exactly.
+
+    Args:
+        host: The ``Host`` header value.
+        port: The port the server listens on, or ``None`` to accept any numeric port.
+
+    Returns:
+        ``True`` for ``127.0.0.1`` or ``localhost`` with the expected port.
+
+    """
+    if not host:
+        return False
+    name, _, host_port = host.partition(":")
+    if name not in LOOPBACK_NAMES:
+        return False
+    if port is None:
+        return host_port == "" or host_port.isdigit()
+    return host_port == str(port) or (host_port == "" and port == 80)  # noqa: PLR2004
+
+
+def client_is_loopback(address: str | None) -> bool:
+    """Report whether a client address is a loopback IP.
+
+    Args:
+        address: The client host from the ASGI scope.
+
+    Returns:
+        ``True`` only for loopback IP addresses.
+
+    """
+    try:
+        return address is not None and ipaddress.ip_address(address).is_loopback
+    except ValueError:
+        return False
 
 
 def _month_bounds(today: dt.date) -> tuple[dt.date, dt.date]:
@@ -132,18 +186,18 @@ def operation_view(state: BookState, operation: OperationState) -> dict[str, Any
     }
 
 
-def create_app(book: Book) -> FastAPI:  # noqa: PLR0915 - route definitions share the closure
+def create_app(book: Book, *, port: int | None = None) -> FastAPI:  # noqa: PLR0915 - route definitions share the closure
     """Build the web application for a book.
 
     Args:
         book: The book to serve.
+        port: The port the server listens on; the ``Host`` header must name it.
 
     Returns:
         The FastAPI application.
 
     """
     app = FastAPI(title="wealthbraid", docs_url=None, redoc_url=None, openapi_url=None)
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=LOOPBACK_HOSTS)
     app.mount("/static", StaticFiles(directory=_HERE / "static"), name="static")
     templates = Jinja2Templates(directory=_HERE / "templates")
     csrf_token = secrets.token_urlsafe(32)
@@ -156,22 +210,31 @@ def create_app(book: Book) -> FastAPI:  # noqa: PLR0915 - route definitions shar
         return templates.TemplateResponse(request, name, {**base, **context}, status_code=status_code)
 
     def check_write(request: Request, token: str) -> None:
-        if not secrets.compare_digest(token, csrf_token):
+        if not hmac.compare_digest(token.encode("utf-8"), csrf_token.encode("utf-8")):
             raise HTTPException(403, "invalid form token; reload the page")
         origin = request.headers.get("origin") or request.headers.get("referer")
-        if origin and urlsplit(origin).netloc != request.headers.get("host"):
-            raise HTTPException(403, "cross-origin request refused")
+        if not origin or urlsplit(origin).netloc != request.headers.get("host"):
+            raise HTTPException(403, "cross-origin or origin-less request refused")
+
+    def secured(response: Response) -> Response:
+        response.headers.update(SECURITY_HEADERS)
+        return response
 
     @app.middleware("http")
-    async def security_headers(request: Request, call_next: Any) -> Response:
-        response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Referrer-Policy"] = "same-origin"
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'"
-        )
-        return response
+    async def guard(request: Request, call_next: Any) -> Response:
+        if not client_is_loopback(request.client.host if request.client else None):
+            return secured(PlainTextResponse("wealthbraid only serves loopback clients", status_code=403))
+        if not host_allowed(request.headers.get("host"), port):
+            return secured(PlainTextResponse("Invalid host header", status_code=400))
+        return secured(await call_next(request))
+
+    @app.exception_handler(Exception)
+    async def server_error(request: Request, exc: Exception) -> Response:
+        return secured(PlainTextResponse("Internal Server Error", status_code=500))
+
+    @app.get("/favicon.ico")
+    def favicon() -> Response:
+        return Response(status_code=204)
 
     @app.exception_handler(WealthbraidError)
     async def domain_error(request: Request, exc: WealthbraidError) -> HTMLResponse:

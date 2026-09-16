@@ -90,14 +90,14 @@ def _import_line(book: Book, amount: str = "-45.20", fingerprint: str = "fp1") -
         reasoning="parsed",
         confidence=1.0,
     )
-    return operation.results[0]
+    return book.decide(operation.id, actor=HUMAN, verdict="approve").results[0]
 
 
 def test_entry_matching_a_line_must_post_its_amount(funded_book):
     """A line link requires a posting of exactly the line's amount to the line's account."""
     line_id = _import_line(funded_book)
     wrong = entry("2026-02-03", ("Expenses:Food", "40"), ("Assets:Bank:Checking", "-40"), lines=[line_id])
-    with pytest.raises(ValidationError, match="matching statement line"):
+    with pytest.raises(ValidationError, match="statement lines total"):
         _apply(funded_book, {"kind": "entry", "data": wrong})
     right = entry("2026-02-03", ("Expenses:Food", "45.2"), ("Assets:Bank:Checking", "-45.20"), lines=[line_id])
     (entry_id,) = _apply(funded_book, {"kind": "entry", "data": right}).results
@@ -197,7 +197,9 @@ def test_forged_record_without_approval_is_detected(funded_book):
     segment = funded_book.store.segments()[-1]
     segment.write_text(segment.read_text() + forged.to_line() + "\n", encoding="utf-8")
     report = verify_book(funded_book)
-    assert [p.message for p in report.problems if p.record == forged.id] == ["record has no originating operation"]
+    assert [p.message for p in report.problems if p.record == forged.id and p.check == "ledger"] == [
+        "record has no originating operation"
+    ]
     assert funded_book.state().ledger().balance("Expenses:Food").get(EUR) == Decimal("45.20")
 
 

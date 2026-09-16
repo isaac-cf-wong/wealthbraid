@@ -9,7 +9,9 @@
   <div class="card stat">
     <div class="label">Net worth ({{ worth.currency }})</div>
     <div class="value">{{ worth.net_worth }}</div>
-    {% if worth.unvalued %}<div class="small faint">plus unvalued {{ m.amounts(worth.unvalued) }}</div>{% endif %}
+    {% if worth.unvalued_assets %}<div class="small faint">plus unvalued assets {{ m.amounts(worth.unvalued_assets) }}</div>{% endif %}
+    {% if worth.unvalued_liabilities %}<div class="small faint">plus unvalued liabilities {{ m.amounts(worth.unvalued_liabilities) }}</div>{% endif %}
+    {% for warning in worth.price_warnings %}<div class="small warning">{{ warning }}</div>{% endfor %}
   </div>
   <div class="card stat">
     <div class="label">This month saved</div>

@@ -8,19 +8,21 @@ record always give the same numbers.
 Monthly rates are the geometric equivalents of the annual rates
 (``(1 + r) ** (1/12) - 1``), so twelve months of growth compound to exactly the
 stated annual rate. Contributions are added at the end of each month (after that
-month's growth); withdrawals likewise. Each projected year decomposes exactly:
+month's growth); withdrawals likewise. Each projected year decomposes as
 
     end = start + contributions - withdrawals + growth
 
-and the result reports the identity's rounding ``residual`` and a ``reconciles``
-flag (residual within 1e-12) so a reader can check it.
+All figures are reported in cents. The reported ``growth`` is the balancing
+figure of the reported cents, so the identity holds exactly for the numbers as
+printed; ``growth_exact`` is the unrounded growth, and ``reconciles`` checks that
+the two differ only by rounding (at most two cents).
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import hashlib
-from decimal import ROUND_HALF_EVEN, Decimal, localcontext
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation, localcontext
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -34,9 +36,10 @@ from wealthbraid.store.records import canonical_json
 
 _CENT = Decimal("0.01")
 _MONTHS = 12
-# The identity end = start + contributions - withdrawals + growth holds exactly in
-# real arithmetic; 34-digit Decimal sums leave rounding residuals far below this.
-_IDENTITY_TOLERANCE = Decimal("1e-12")
+# Reported growth absorbs the rounding of start, contributions, withdrawals, and end to
+# cents, so it can differ from the exact growth by at most this much.
+_ROUNDING_TOLERANCE = Decimal("0.02")
+_PRECISION = 34
 
 
 class ScenarioAssumptions(BaseModel):
@@ -113,7 +116,7 @@ def monthly_rate(annual: Decimal) -> Decimal:
     if annual <= -1:
         raise ValidationError("annual rates must be greater than -1 (-100%)")
     with localcontext() as context:
-        context.prec = 34
+        context.prec = _PRECISION
         return (Decimal(1) + annual) ** (Decimal(1) / Decimal(_MONTHS)) - Decimal(1)
 
 
@@ -142,7 +145,7 @@ def project(assumptions: ScenarioAssumptions, *, start_amount: Decimal, years: i
     contribution = Decimal(assumptions.monthly_contribution)
     deflator = Decimal(1)
     with localcontext() as context:
-        context.prec = 34
+        context.prec = _PRECISION
         for year in range(1, years + 1):
             year_start = balance
             contributed = withdrawn = growth = Decimal(0)
@@ -156,25 +159,41 @@ def project(assumptions: ScenarioAssumptions, *, start_amount: Decimal, years: i
                     balance -= withdrawal
                     withdrawn += withdrawal
             deflator *= Decimal(1) + inflation
+            start_q, contributed_q, withdrawn_q, end_q = (
+                _cents(year_start),
+                _cents(contributed),
+                _cents(withdrawn),
+                _cents(balance),
+            )
+            growth_q = end_q - start_q - contributed_q + withdrawn_q
             rows.append(
                 {
                     "year": year,
-                    "start": _money(year_start),
-                    "contributions": _money(contributed),
-                    "withdrawals": _money(withdrawn),
-                    "growth": _money(growth),
-                    "end": _money(balance),
+                    "start": str(start_q),
+                    "contributions": str(contributed_q),
+                    "withdrawals": str(withdrawn_q),
+                    "growth": str(growth_q),
+                    "growth_exact": str(growth),
+                    "end": str(end_q),
                     "end_real": _money(balance / deflator),
-                    "residual": str(balance - (year_start + contributed - withdrawn + growth)),
-                    "reconciles": abs(balance - (year_start + contributed - withdrawn + growth)) <= _IDENTITY_TOLERANCE,
+                    "reconciles": abs(growth_q - growth) <= _ROUNDING_TOLERANCE,
                 }
             )
             contribution *= Decimal(1) + contribution_growth
     return rows
 
 
+def _cents(value: Decimal) -> Decimal:
+    try:
+        return value.quantize(_CENT, rounding=ROUND_HALF_EVEN)
+    except InvalidOperation as exc:
+        raise ValidationError(
+            f"scenario amount {value:.3E} is too large to report in cents; check the rates (0.05 means 5%)"
+        ) from exc
+
+
 def _money(value: Decimal) -> str:
-    return str(value.quantize(_CENT, rounding=ROUND_HALF_EVEN))
+    return str(_cents(value))
 
 
 def run_scenario(state: BookState, spec: ScenarioSpec, *, default_currency: str) -> dict[str, Any]:
@@ -202,6 +221,12 @@ def run_scenario(state: BookState, spec: ScenarioSpec, *, default_currency: str)
         start_amount = Decimal(worth["net_worth"]) if from_book else Decimal(assumptions.starting_amount)
         rows = project(assumptions, start_amount=start_amount, years=spec.years)
         final = rows[-1]
+        with localcontext() as context:
+            context.prec = _PRECISION
+            totals = {
+                key: _money(sum((Decimal(r[key]) for r in rows), Decimal(0)))
+                for key in ("contributions", "withdrawals", "growth")
+            }
         results[name] = {
             "assumptions": assumptions.model_dump(mode="json"),
             "starting_amount": str(start_amount),
@@ -210,9 +235,9 @@ def run_scenario(state: BookState, spec: ScenarioSpec, *, default_currency: str)
             "summary": {
                 "end": final["end"],
                 "end_real": final["end_real"],
-                "total_contributions": _money(sum((Decimal(r["contributions"]) for r in rows), Decimal(0))),
-                "total_withdrawals": _money(sum((Decimal(r["withdrawals"]) for r in rows), Decimal(0))),
-                "total_growth": _money(sum((Decimal(r["growth"]) for r in rows), Decimal(0))),
+                "total_contributions": totals["contributions"],
+                "total_withdrawals": totals["withdrawals"],
+                "total_growth": totals["growth"],
                 "reconciles": all(r["reconciles"] for r in rows),
             },
         }
@@ -223,7 +248,12 @@ def run_scenario(state: BookState, spec: ScenarioSpec, *, default_currency: str)
         "inputs_sha256": hashlib.sha256(canonical_json(spec_json).encode("utf-8")).hexdigest(),
         "spec": spec_json,
         "currency": currency,
-        "book_net_worth": {"as_of": spec.start.isoformat(), "value": worth["net_worth"], "unvalued": worth["unvalued"]},
+        "book_net_worth": {
+            "as_of": spec.start.isoformat(),
+            "value": worth["net_worth"],
+            "unvalued_assets": worth["unvalued_assets"],
+            "unvalued_liabilities": worth["unvalued_liabilities"],
+        },
         "variants": results,
     }
 

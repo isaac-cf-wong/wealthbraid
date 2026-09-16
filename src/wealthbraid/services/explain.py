@@ -21,7 +21,7 @@ from typing import Any
 from wealthbraid.book.state import BookState, OperationState
 from wealthbraid.engine.inventory import Inventory
 from wealthbraid.engine.money import Commodity
-from wealthbraid.errors import NotFoundError
+from wealthbraid.errors import NotFoundError, ValidationError
 from wealthbraid.services.reports import amounts, basis
 from wealthbraid.store.records import RecordKind
 
@@ -47,8 +47,11 @@ def explain_change(state: BookState, *, account: str, start: dt.date, end: dt.da
 
     Raises:
         NotFoundError: If no opened account lies in the subtree.
+        ValidationError: If ``start`` is after ``end``.
 
     """
+    if start > end:
+        raise ValidationError(f"the start date {start} must be on or before the end date {end}")
     if not any(_in_subtree(name, account) for name in state.accounts):
         raise NotFoundError(f"no account {account} or sub-account is open")
     opening = state.ledger(end=start - dt.timedelta(days=1)).balance(account)
@@ -64,8 +67,6 @@ def explain_change(state: BookState, *, account: str, start: dt.date, end: dt.da
         if not inside:
             continue
         change = Inventory.from_amounts(p.amount for p in inside if p.amount is not None)
-        if change.is_empty():
-            continue
         for posting in version.transaction.postings:
             if posting.amount is None or _in_subtree(posting.account, account):
                 continue

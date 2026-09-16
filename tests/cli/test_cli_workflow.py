@@ -218,7 +218,8 @@ def test_statement_pipeline_via_cli(cli_book, tmp_path):
             "--json",
         )
     )
-    assert (imported["new_lines"], imported["operation"]["status"]) == (2, "applied")
+    assert (imported["new_lines"], imported["operation"]["status"]) == (2, "pending")
+    ok_json(wb(cli_book, *HUMAN, "ops", "approve", imported["operation"]["id"], "--json"))
     lines = ok_json(wb(cli_book, "lines", "--unmatched", "--json"))
     coffee = next(line["id"] for line in lines if line["description"] == "COFFEE BAR")
     salary = next(line["id"] for line in lines if line["description"] == "SALARY")

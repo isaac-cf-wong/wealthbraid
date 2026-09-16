@@ -129,3 +129,42 @@ def test_corrupt_evidence_blob_is_detected_on_rewrite(tmp_path):
     path.write_bytes(b"tampered")
     with pytest.raises(IntegrityError):
         store.put_evidence(b"original")
+
+
+def test_stale_lock_from_a_dead_process_is_recovered(tmp_path):
+    """A lock left by a crashed writer does not block the book forever."""
+    import subprocess
+    import sys
+
+    child = subprocess.run(
+        [sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True, text=True, check=True
+    )
+    store = RecordStore(tmp_path)
+    lock = tmp_path / ".wealthbraid" / "lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text(child.stdout.strip())
+    with store.lock():
+        assert lock.read_text() == str(__import__("os").getpid())
+    assert not lock.exists()
+
+
+def test_lock_held_by_a_live_process_is_respected_and_not_deleted(tmp_path):
+    import os
+
+    store = RecordStore(tmp_path)
+    lock = tmp_path / ".wealthbraid" / "lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text(str(os.getppid()))
+    with pytest.raises(ConflictError, match=str(os.getppid())), store.lock():
+        pass
+    assert lock.read_text() == str(os.getppid())
+
+
+def test_release_does_not_delete_another_writers_lock(tmp_path):
+    import os
+
+    store = RecordStore(tmp_path)
+    lock = tmp_path / ".wealthbraid" / "lock"
+    with store.lock():
+        lock.write_text(str(os.getppid()))
+    assert lock.read_text() == str(os.getppid())

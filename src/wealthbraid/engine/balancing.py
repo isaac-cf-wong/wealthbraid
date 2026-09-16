@@ -5,10 +5,12 @@ module infers per-commodity tolerances from the precision of the amounts
 involved, fills in at most one elided posting amount, and verifies that every
 commodity nets to zero within tolerance.
 
-Tolerance inference follows the standard rule: for a commodity whose most
-precise amount has ``d`` fractional digits, the tolerance is half of the last
-place, ``0.5 * 10**-d``. Amounts written as integers (``d == 0``) must balance
-exactly.
+With the default multiplier, balancing is **exact**. The inferred tolerance is
+half of the last decimal place (``0.5 * 10**-d`` for a commodity whose most
+precise amount has ``d`` fractional digits), but every amount is a multiple of
+``10**-d``, so any non-zero residual is at least ``10**-d`` and always exceeds it.
+Callers that want real slack (for example when importing rounded foreign
+amounts) can pass a larger ``multiplier``.
 """
 
 from __future__ import annotations

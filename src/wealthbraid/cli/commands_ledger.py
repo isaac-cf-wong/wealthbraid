@@ -9,7 +9,7 @@ from typing import Annotated, Any
 import typer
 
 from wealthbraid.book.schema import parse_data
-from wealthbraid.book.state import to_transaction
+from wealthbraid.book.state import BookState, EntryVersion, to_transaction
 from wealthbraid.cli.common import (
     ApproveOption,
     AtOption,
@@ -20,6 +20,7 @@ from wealthbraid.cli.common import (
     operation_json,
     operation_text,
     parse_date,
+    read_state,
     resolve_actor,
     table,
 )
@@ -86,10 +87,19 @@ def parse_postings(specs: list[str], currency: str) -> list[dict[str, str]]:
     ]
 
 
+def _current_entry(state: BookState, entry_id: str) -> EntryVersion:
+    current = state.entries.get(entry_id)
+    if current is None:
+        latest = state.current_version(entry_id)
+        hint = f"; its current version is {latest}" if latest and latest != entry_id else ""
+        raise NotFoundError(f"{entry_id} is not a current entry version{hint}")
+    return current
+
+
 @handle_errors
 def accounts_command(at: AtOption = None, as_json: JsonOption = False) -> None:
     """List accounts with their open and close dates."""
-    state = open_book().state(at=at)
+    state = read_state(at)
     data = [
         {
             "account": a.name,
@@ -184,7 +194,7 @@ def entries_command(
     as_json: JsonOption = False,
 ) -> None:
     """List current entry versions (corrected entries show their latest version)."""
-    state = open_book().state(at=at)
+    state = read_state(at)
     first = parse_date(start, "--from", default=dt.date.min)
     last = parse_date(end, "--to", default=dt.date.max)
     data = []
@@ -199,7 +209,7 @@ def entries_command(
                 "id": version.id,
                 "origin": version.origin,
                 "corrected": len(version.history) > 1,
-                **version.data.model_dump(mode="json", exclude_defaults=True),
+                **version.data.model_dump(mode="json"),
             }
         )
 
@@ -302,12 +312,7 @@ def correct_command(
     """Propose a correction that supersedes an entry (the original stays in the log)."""
     book = open_book()
     actor = resolve_actor(book)
-    state = book.state()
-    current = state.entries.get(entry_id)
-    if current is None:
-        latest = state.current_version(entry_id)
-        hint = f"; its current version is {latest}" if latest else ""
-        raise NotFoundError(f"{entry_id} is not a current entry version{hint}")
+    current = _current_entry(book.state(), entry_id)
     replacement = current.data.model_dump(mode="json", exclude_defaults=True)
     if date:
         replacement["date"] = parse_date(date, "--date").isoformat()
@@ -342,6 +347,7 @@ def void_command(
     """Propose voiding an entry (recorded as a correction without replacement)."""
     book = open_book()
     actor = resolve_actor(book)
+    _current_entry(book.state(), entry_id)
     operation = book.propose(
         actor=actor,
         tool="entry.void",

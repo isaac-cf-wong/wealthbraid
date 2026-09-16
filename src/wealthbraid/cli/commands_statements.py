@@ -19,6 +19,8 @@ from wealthbraid.cli.common import (
     operation_json,
     operation_text,
     parse_date,
+    read_input,
+    read_state,
     resolve_actor,
     table,
 )
@@ -52,7 +54,7 @@ def evidence_add_command(
 @handle_errors
 def evidence_list_command(at: AtOption = None, as_json: JsonOption = False) -> None:
     """List evidence records."""
-    state = open_book().state(at=at)
+    state = read_state(at)
     data = [{"id": eid, **ev.model_dump(mode="json")} for eid, ev in state.evidence.items()]
     emit(
         data,
@@ -132,7 +134,7 @@ def lines_command(
     as_json: JsonOption = False,
 ) -> None:
     """List statement lines and the entries matching them."""
-    state = open_book().state(at=at)
+    state = read_state(at)
     ids = state.unmatched_lines() if unmatched else sorted(state.lines, key=lambda i: (state.lines[i].date, i))
     data = [
         {"id": line_id, "matched_by": state.line_matches.get(line_id), **state.lines[line_id].model_dump(mode="json")}
@@ -178,7 +180,7 @@ def categorize_command(
     book = open_book()
     parsed = None
     if assignments is not None:
-        raw_text = typer.get_text_stream("stdin").read() if str(assignments) == "-" else assignments.read_text("utf-8")
+        raw_text = read_input(assignments)
         try:
             raw = json.loads(raw_text)
         except json.JSONDecodeError as exc:
@@ -244,7 +246,7 @@ def reconcile_command(
 @handle_errors
 def reconciliations_command(at: AtOption = None, as_json: JsonOption = False) -> None:
     """Re-check every recorded reconciliation against the current ledger."""
-    rows = reconciliation_status(open_book().state(at=at))
+    rows = reconciliation_status(read_state(at))
     emit(
         rows,
         as_json,

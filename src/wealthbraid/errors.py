@@ -51,6 +51,13 @@ class PolicyError(WealthbraidError):
     exit_code = 6
 
 
+class StorageError(WealthbraidError):
+    """Reading or writing a file failed for a reason other than a missing path or bad input."""
+
+    code = "io"
+    exit_code = 1
+
+
 class ConflictError(WealthbraidError):
     """The action conflicts with the book's current state (for example, a stale correction)."""
 

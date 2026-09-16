@@ -15,7 +15,7 @@ BASE = "http://127.0.0.1:8765"
 
 @pytest.fixture
 def client(funded_book):
-    return TestClient(create_app(funded_book), base_url=BASE)
+    return TestClient(create_app(funded_book, port=8765), base_url=BASE, client=("127.0.0.1", 50000))
 
 
 def _token(html: str) -> str:
@@ -84,7 +84,7 @@ def test_write_without_token_or_from_other_origin_is_refused(client, funded_book
 
 
 def test_non_loopback_host_header_is_refused(funded_book):
-    rebinding = TestClient(create_app(funded_book), base_url="http://attacker.example")
+    rebinding = TestClient(create_app(funded_book), base_url="http://attacker.example", client=("127.0.0.1", 50000))
     assert rebinding.get("/").status_code == 400
 
 
@@ -102,7 +102,7 @@ def test_trace_and_evidence_download(client, funded_book):
 
 def test_categorize_line_from_ui(client, funded_book):
     evidence_id, _ = funded_book.add_evidence(b"csv", filename="s.csv", actor=AGENT)
-    funded_book.propose(
+    lines = funded_book.propose(
         actor=AGENT,
         tool="import",
         summary="s",
@@ -124,6 +124,7 @@ def test_categorize_line_from_ui(client, funded_book):
             }
         ],
     )
+    funded_book.decide(lines.id, actor="human:alice", verdict="approve")
     page = client.get("/lines")
     assert "BAKERY" in page.text
     line_id = funded_book.state().unmatched_lines()[0]

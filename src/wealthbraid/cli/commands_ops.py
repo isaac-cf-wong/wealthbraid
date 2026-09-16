@@ -10,12 +10,15 @@ import typer
 
 from wealthbraid.cli.common import (
     ApproveOption,
+    AtOption,
     JsonOption,
     emit,
     handle_errors,
     open_book,
     operation_json,
     operation_text,
+    read_input,
+    read_state,
     resolve_actor,
     table,
 )
@@ -37,7 +40,7 @@ def propose_command(
     as_json: JsonOption = False,
 ) -> None:
     """Submit a proposal: {tool, summary, reasoning, confidence, changes, evidence?, inputs?}."""
-    text = typer.get_text_stream("stdin").read() if str(file) == "-" else file.read_text(encoding="utf-8")
+    text = read_input(file)
     try:
         proposal = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -69,10 +72,11 @@ def propose_command(
 def ops_list_command(
     status: Annotated[str | None, typer.Option(help="pending, applied, rejected, or approved.")] = "pending",
     all_statuses: Annotated[bool, typer.Option("--all", help="Show every status.")] = False,
+    at: AtOption = None,
     as_json: JsonOption = False,
 ) -> None:
     """List operations (pending ones by default)."""
-    state = open_book().state()
+    state = read_state(at)
     operations = [op for op in state.operations.values() if all_statuses or status is None or op.status == status]
     data = [operation_json(op) for op in operations]
     emit(
@@ -141,9 +145,9 @@ def ops_reject_command(
 
 
 @handle_errors
-def review_command(as_json: JsonOption = False) -> None:
+def review_command(at: AtOption = None, as_json: JsonOption = False) -> None:
     """Show everything waiting for a human: proposals, unmatched lines, reconciliation exceptions, issues."""
-    queue = review_queue(open_book().state())
+    queue = review_queue(read_state(at))
 
     def text(q: dict[str, Any]) -> str:
         out = []

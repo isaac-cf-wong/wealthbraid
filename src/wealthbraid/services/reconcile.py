@@ -94,8 +94,8 @@ def reconcile(  # noqa: PLR0913 - keyword-only options
 
     """
     state = book.state()
-    if account not in state.accounts:
-        raise ValidationError(f"account not opened: {account}")
+    if not any(_in_subtree(name, account) for name in state.accounts):
+        raise ValidationError(f"no account {account} or sub-account is open")
     commodity = commodity or book.config.currency
     try:
         statement = Decimal(statement_balance)
@@ -153,6 +153,9 @@ def reconcile(  # noqa: PLR0913 - keyword-only options
     return comparison, operation
 
 
+RESOLVED_STATUSES = frozenset({"balanced", "superseded"})
+
+
 def reconciliation_status(state: BookState) -> list[dict[str, Any]]:
     """Re-check every applied reconciliation against the current book.
 
@@ -160,19 +163,39 @@ def reconciliation_status(state: BookState) -> list[dict[str, Any]]:
         state: The book state.
 
     Returns:
-        One row per reconciliation with ``status``: ``balanced``, ``discrepancy``
-        (the statement never matched), or ``changed`` (it matched when recorded,
-        but later changes moved the ledger balance for that date).
+        One row per reconciliation with ``status``:
+
+        * ``superseded``: a later reconciliation covers the same account, date, and commodity;
+        * ``new_lines``: statement lines dated inside the period arrived after it was recorded
+          and are not yet accounted for;
+        * ``balanced``: the ledger now agrees with the statement;
+        * ``changed``: it agreed when recorded, but later changes moved the ledger balance;
+        * ``discrepancy``: it never agreed and still does not.
+
+        :data:`RESOLVED_STATUSES` need no attention.
 
     """
+    latest: dict[tuple[str, dt.date, str], str] = {}
+    for record_id, data in state.reconciliations:
+        latest[(data.account, data.date, data.commodity)] = record_id
     rows = []
     for record_id, data in state.reconciliations:
         now = ledger_balance(state, data.account, data.date, data.commodity)
         statement = Decimal(data.statement_balance)
-        if now != Decimal(data.ledger_balance):
-            status = "changed"
+        recorded = Decimal(data.ledger_balance)
+        new_lines = [
+            line_id
+            for line_id in unmatched_lines_for(state, data.account, data.date)
+            if line_id not in data.unmatched_lines
+        ]
+        if latest[(data.account, data.date, data.commodity)] != record_id:
+            status = "superseded"
+        elif new_lines:
+            status = "new_lines"
         elif now == statement:
             status = "balanced"
+        elif recorded == statement:
+            status = "changed"
         else:
             status = "discrepancy"
         rows.append(
@@ -185,6 +208,7 @@ def reconciliation_status(state: BookState) -> list[dict[str, Any]]:
                 "recorded_ledger_balance": data.ledger_balance,
                 "current_ledger_balance": str(now),
                 "current_difference": str(statement - now),
+                "new_unmatched_lines": new_lines,
                 "status": status,
             }
         )

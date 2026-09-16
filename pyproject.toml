@@ -45,7 +45,7 @@ build = ["hatch>=1.18.0"]
 release = ["git-cliff>=2.13.1"]
 
 [project.scripts]
-wealthbraid = "wealthbraid.cli.main:app"
+wealthbraid = "wealthbraid.cli.main:run"
 
 [project.urls]
 Documentation = "https://isaac-cf-wong.github.io/wealthbraid"

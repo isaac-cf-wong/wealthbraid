@@ -2,15 +2,15 @@
 
 Importing never creates accounting entries. It stores the file as evidence and
 proposes one ``line`` record per row: an observation of what the bank reported.
-Lines do not change balances, so policy can apply them without review; turning
-them into entries is the job of categorization, which does need approval.
+Lines decide what can enter the book (a recorded fingerprint blocks the same row
+from being imported again), so the proposal waits for human approval like any
+other sensitive change. Turning lines into entries is the job of categorization.
 
 Each line carries a fingerprint so re-importing the same (or an overlapping)
-statement skips rows already recorded. The fingerprint uses the bank's own
-reference when the file has one; otherwise it uses the account, date, amount,
-commodity, and normalised description, plus the row's occurrence number among
-identical rows in the same file, so two genuine identical purchases on one day
-are both kept.
+statement skips rows already recorded or already proposed. The fingerprint uses
+the account, date, amount, commodity, and normalised description, plus the row's
+occurrence number among identical rows in the same file, so two genuine
+identical purchases on one day are both kept.
 """
 
 from __future__ import annotations
@@ -19,8 +19,9 @@ import csv
 import datetime as dt
 import hashlib
 import io
+import re
 from dataclasses import dataclass, field, replace
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 
 from wealthbraid.book.book import Book
@@ -61,15 +62,37 @@ class ImportResult:
     operation: OperationState | None = None
 
 
+_PLAIN = r"\d+(?:{dec}\d+)?"
+_GROUPED = r"\d{{1,3}}(?:{group}\d{{3}})+(?:{dec}\d+)?"
+
+
+def _amount_pattern(*, decimal_comma: bool) -> re.Pattern[str]:
+    dec, group = (",", r"\.") if decimal_comma else (r"\.", ",")
+    body = f"(?:{_GROUPED.format(dec=dec, group=group)}|{_PLAIN.format(dec=dec)})"
+    return re.compile(rf"[+-]?{body}")
+
+
+_AMOUNT_PATTERNS = {flag: _amount_pattern(decimal_comma=flag) for flag in (False, True)}
+
+
 def _parse_decimal(text: str, *, decimal_comma: bool, row: int, column: str) -> Decimal:
+    """Parse an amount, accepting thousands separators only in valid groups of three.
+
+    Anything ambiguous (a decimal comma when the profile expects a decimal point,
+    or misplaced group separators) is rejected rather than guessed, so a wrong
+    profile setting can never turn ``1234,50`` into ``123450``.
+    """
     cleaned = text.strip().replace(" ", "").replace("\u00a0", "")
-    cleaned = cleaned.replace(".", "").replace(",", ".") if decimal_comma else cleaned.replace(",", "")
     negative = cleaned.startswith("(") and cleaned.endswith(")")
-    cleaned = cleaned.strip("()")
-    try:
-        value = Decimal(cleaned)
-    except InvalidOperation as exc:
-        raise ValidationError(f"row {row}: invalid amount {text!r} in column {column!r}") from exc
+    if negative:
+        cleaned = cleaned[1:-1]
+    if not _AMOUNT_PATTERNS[decimal_comma].fullmatch(cleaned):
+        separator = "decimal comma" if decimal_comma else "decimal point"
+        raise ValidationError(
+            f"row {row}: invalid amount {text!r} in column {column!r} (the profile expects a {separator})"
+        )
+    normalised = cleaned.replace(".", "").replace(",", ".") if decimal_comma else cleaned.replace(",", "")
+    value = Decimal(normalised)
     return -value if negative else value
 
 
@@ -103,7 +126,8 @@ def parse_csv(content: bytes, profile: ImportProfile) -> list[ParsedRow]:
         raise ValidationError(f"statement is missing column(s): {', '.join(missing)} (found: {', '.join(headers)})")
 
     rows = []
-    for number, raw in enumerate(reader, start=2):
+    for raw in reader:
+        number = reader.line_num
         if not any((value or "").strip() for value in raw.values()):
             continue
         date_text = (raw.get(profile.date) or "").strip()
@@ -146,6 +170,13 @@ def parse_csv(content: bytes, profile: ImportProfile) -> list[ParsedRow]:
 def fingerprint_rows(rows: list[ParsedRow], *, account: str, commodity: str) -> list[str]:
     """Compute a deduplication fingerprint for every row.
 
+    The fingerprint covers what identifies a transaction regardless of export
+    format: account, date, amount, commodity, and normalised description, plus
+    the row's occurrence number among identical rows in the same file. Bank
+    references are deliberately left out: many banks reuse them across
+    statements, and the same transaction exported with and without a reference
+    column must still be recognised.
+
     Args:
         rows: The parsed rows in file order.
         account: The statement account.
@@ -158,15 +189,10 @@ def fingerprint_rows(rows: list[ParsedRow], *, account: str, commodity: str) -> 
     seen: dict[str, int] = {}
     fingerprints = []
     for row in rows:
-        if row.external_id:
-            basis = f"ref|{account}|{row.external_id}"
-        else:
-            content = (
-                f"row|{account}|{row.date.isoformat()}|{row.amount.normalize()}|{commodity}|{row.description.lower()}"
-            )
-            occurrence = seen.get(content, 0)
-            seen[content] = occurrence + 1
-            basis = f"{content}|{occurrence}"
+        content = f"row|{account}|{row.date.isoformat()}|{row.amount.normalize()}|{commodity}|{row.description.lower()}"
+        occurrence = seen.get(content, 0)
+        seen[content] = occurrence + 1
+        basis = f"{content}|{occurrence}"
         fingerprints.append(hashlib.sha256(basis.encode("utf-8")).hexdigest()[:32])
     return fingerprints
 
@@ -215,7 +241,11 @@ def import_csv(  # noqa: PLR0913 - keyword-only options
         raise ValidationError(f"account not opened: {statement_account}")
 
     evidence_id, _ = book.add_evidence(content, filename=path.name, actor=actor, source=source)
-    known = book.state().line_fingerprints
+    state = book.state()
+    known = set(state.line_fingerprints)
+    for operation in state.operations.values():
+        if operation.status == "pending":
+            known.update(c.data.get("fingerprint") for c in operation.data.changes if c.kind == "line")
     result = ImportResult(evidence=evidence_id, rows=len(rows), new_lines=0)
     changes = []
     for row, fingerprint in zip(rows, fingerprints, strict=True):
@@ -246,7 +276,7 @@ def import_csv(  # noqa: PLR0913 - keyword-only options
             changes=changes,
             reasoning=(
                 f"Parsed {len(rows)} rows with profile {profile.name!r}; "
-                f"{len(result.duplicates)} already recorded were skipped."
+                f"{len(result.duplicates)} already recorded or already proposed were skipped."
             ),
             confidence=1.0,
             evidence=[evidence_id],

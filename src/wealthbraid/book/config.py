@@ -237,11 +237,14 @@ def find_book(start: Path | None = None, explicit: Path | None = None) -> Path:
 
     """
     if explicit is not None:
+        explicit = explicit.expanduser().resolve()
         if not (explicit / CONFIG_NAME).is_file():
             raise NotFoundError(f"{explicit} is not a wealthbraid book (no {CONFIG_NAME})")
         return explicit
     env = os.environ.get(BOOK_ENV)
-    if env:
+    if env is not None:
+        if not env.strip():
+            raise NotFoundError(f"{BOOK_ENV} is set but empty; unset it or point it at a book")
         return find_book(explicit=Path(env))
     current = (start or Path.cwd()).resolve()
     for candidate in (current, *current.parents):
@@ -262,9 +265,10 @@ currency = {currency}   # reporting currency for net worth and scenarios
 name = {user}   # approvals from the web UI are recorded as human:<name>
 
 [policy]
-# Operations that only add evidence, statement lines, or notes do not change
-# balances. When true they are applied immediately (recorded as approved by
-# system:policy); everything else always waits for a human decision.
+# Operations that only add evidence or notes neither change balances nor decide
+# what can enter the book. When true they are applied immediately (recorded as
+# approved by system:policy); everything else, including imported statement
+# lines, always waits for a human decision.
 auto_apply_non_sensitive = true
 
 # Categorization rules, tried in order by `wealthbraid categorize`.

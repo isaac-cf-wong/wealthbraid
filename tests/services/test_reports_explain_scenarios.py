@@ -71,9 +71,9 @@ def test_net_worth_values_foreign_holdings(rich_book):
     """1000 USD at 0.90 = 900 EUR; before the price exists the USD stays unvalued."""
     report = net_worth(rich_book.state(), as_of=dt.date(2026, 2, 28), currency="EUR")
     assert Decimal(report["net_worth"]) == Decimal("4454.80") + Decimal(900)
-    assert report["unvalued"] == {}
+    assert report["unvalued_assets"] == {}
     no_price = net_worth(rich_book.state(), as_of=dt.date(2026, 1, 31), currency="USD")
-    assert no_price["unvalued"] == {"EUR": "3000.00"}
+    assert no_price["unvalued_assets"] == {"EUR": "3000.00"}
 
 
 def test_cashflow_months_and_savings_rate(rich_book):

@@ -4,9 +4,10 @@
 files; give it records and it rebuilds accounts, the current version of every
 entry (following corrections), statement lines and their matches, prices,
 reconciliations, notes, and the status of every operation. Any record that
-violates an invariant is kept in the log but excluded from the ledger and
-reported as an :class:`Issue`, so a damaged book still loads and can be
-diagnosed.
+violates an invariant, including a record whose content no longer matches its
+id or whose chain link is broken, is kept in the log but excluded from the
+ledger and reported as an :class:`Issue`, so a damaged book still loads and can
+be diagnosed without serving tampered numbers.
 """
 
 from __future__ import annotations
@@ -46,8 +47,13 @@ from wealthbraid.store.records import Record, RecordKind, canonical_json
 HUMAN_PREFIX = "human:"
 POLICY_ACTOR = "system:policy"
 
-# Changes of these kinds never alter balances, so policy may apply them without review.
-NON_SENSITIVE_KINDS = frozenset({RecordKind.EVIDENCE, RecordKind.LINE, RecordKind.NOTE})
+# Changes of these kinds neither alter balances nor decide what enters the book, so policy
+# may apply them without review. Statement lines are deliberately excluded: a line
+# occupies a fingerprint that decides whether a bank row can ever be imported.
+NON_SENSITIVE_KINDS = frozenset({RecordKind.EVIDENCE, RecordKind.NOTE})
+
+# Payload keys whose values are record ids; only these may carry "$N" references.
+REFERENCE_KEYS = frozenset({"evidence", "lines", "subjects", "target"})
 
 
 @dataclass(frozen=True)
@@ -171,7 +177,9 @@ class BookState:
     notes: dict[str, list[str]] = field(default_factory=lambda: defaultdict(list))
     operations: dict[str, OperationState] = field(default_factory=dict)
     produced: dict[str, list[str]] = field(default_factory=lambda: defaultdict(list))
+    account_records: dict[str, str] = field(default_factory=dict)
     issues: list[Issue] = field(default_factory=list)
+    integrity_issues: list[Issue] = field(default_factory=list)
 
     # -- construction -------------------------------------------------------
 
@@ -211,9 +219,16 @@ class BookState:
             The issues this record raised (also appended to :attr:`issues`).
 
         """
+        previous = self.records[-1] if self.records else None
         self.records.append(record)
-        self.by_id[record.id] = record
         before = len(self.issues)
+        broken = self._integrity_problem(record, previous)
+        if broken is not None:
+            issue = Issue(record.id, broken)
+            self.issues.append(issue)
+            self.integrity_issues.append(issue)
+            return self.issues[before:]
+        self.by_id[record.id] = record
         try:
             data = parse_data(record.kind, record.data)
             self._check_provenance(record)
@@ -224,6 +239,19 @@ class BookState:
         except (ValidationError, EngineError) as exc:
             self.issues.append(Issue(record.id, str(exc)))
         return self.issues[before:]
+
+    @staticmethod
+    def _integrity_problem(record: Record, previous: Record | None) -> str | None:
+        expected = record.expected_id()
+        if record.id != expected:
+            return f"record content does not match its id (content hashes to {expected}); excluded"
+        expected_seq = previous.seq + 1 if previous else 1
+        if record.seq != expected_seq:
+            return f"sequence number {record.seq}, expected {expected_seq}; excluded"
+        expected_prev = previous.id if previous else None
+        if record.prev != expected_prev:
+            return f"prev is {record.prev}, expected {expected_prev}; excluded"
+        return None
 
     # -- provenance ---------------------------------------------------------
 
@@ -252,11 +280,18 @@ class BookState:
             commodities=tuple(data.commodities),
             description=data.description,
         )
+        self.account_records[record.id] = data.account
 
     def _apply_account_close(self, record: Record, data: AccountCloseData) -> None:
         account = self._account(data.account)
         if account.closed is not None:
             raise ValidationError(f"account already closed: {data.account}")
+        self._check_close(account, data)
+        account.closed = data.date
+        account.close_record = record.id
+        self.account_records[record.id] = data.account
+
+    def _check_close(self, account: AccountState, data: AccountCloseData) -> None:
         if data.date < account.opened:
             raise ValidationError(f"cannot close {data.account} before it was opened ({account.opened})")
         later = [
@@ -266,8 +301,6 @@ class BookState:
         ]
         if later:
             raise ValidationError(f"{data.account} has entries after {data.date}: {', '.join(sorted(later))}")
-        account.closed = data.date
-        account.close_record = record.id
 
     def _apply_evidence(self, record: Record, data: EvidenceData) -> None:
         self.evidence[record.id] = data
@@ -277,10 +310,13 @@ class BookState:
         if data.evidence not in self.evidence:
             raise ValidationError(f"unknown evidence {data.evidence}")
         self._account(data.account)
-        if data.fingerprint in self.line_fingerprints:
-            raise ValidationError(f"duplicate statement line (same as {self.line_fingerprints[data.fingerprint]})")
+        self._check_fingerprint(data.fingerprint)
         self.lines[record.id] = data
         self.line_fingerprints[data.fingerprint] = record.id
+
+    def _check_fingerprint(self, fingerprint: str) -> None:
+        if fingerprint in self.line_fingerprints:
+            raise ValidationError(f"duplicate statement line (same as {self.line_fingerprints[fingerprint]})")
 
     def _apply_entry(self, record: Record, data: EntryData) -> None:
         transaction = self._validate_entry(record.id, data, releasing=None)
@@ -288,28 +324,120 @@ class BookState:
         self.entries[record.id] = EntryVersion(record.id, record.id, data, transaction, [record.id])
 
     def _apply_correction(self, record: Record, data: CorrectionData) -> None:
-        current = self.entries.get(data.target)
-        if current is None:
-            if data.target in self.superseded:
-                raise ValidationError(
-                    f"stale correction: {data.target} was already superseded by {self.superseded[data.target]}"
-                )
-            if data.target in self.voided:
-                raise ValidationError(f"cannot correct {data.target}: voided by {self.voided[data.target]}")
-            raise ValidationError(f"unknown entry {data.target}")
+        target = data.target
+        if target in self.entries:
+            self._correct_entry(record, data)
+        elif target in self.lines:
+            self._correct_line(record, data)
+        elif target in self.account_records:
+            self._correct_account(record, data)
+        elif target in self.superseded:
+            raise ValidationError(f"stale correction: {target} was already superseded by {self.superseded[target]}")
+        elif target in self.voided:
+            raise ValidationError(f"cannot correct {target}: voided by {self.voided[target]}")
+        else:
+            raise ValidationError(f"no current entry, statement line, or account record {target}")
+
+    def _replace(self, target: str, record: Record, replacement: bool) -> None:
+        if replacement:
+            self.superseded[target] = record.id
+        else:
+            self.voided[target] = record.id
+
+    def _correct_entry(self, record: Record, data: CorrectionData) -> None:
+        current = self.entries[data.target]
         if data.replacement is None:
             del self.entries[data.target]
             self._unlink_lines(current)
-            self.voided[data.target] = record.id
+            self._replace(data.target, record, replacement=False)
             return
-        transaction = self._validate_entry(record.id, data.replacement, releasing=current)
+        replacement = parse_data(RecordKind.ENTRY, data.replacement)
+        transaction = self._validate_entry(record.id, replacement, releasing=current)
         del self.entries[data.target]
         self._unlink_lines(current)
-        self._link_lines(record.id, data.replacement)
-        self.superseded[data.target] = record.id
+        self._link_lines(record.id, replacement)
+        self._replace(data.target, record, replacement=True)
         self.entries[record.id] = EntryVersion(
-            record.id, current.origin, data.replacement, transaction, [*current.history, record.id]
+            record.id, current.origin, replacement, transaction, [*current.history, record.id]
         )
+
+    def _correct_line(self, record: Record, data: CorrectionData) -> None:
+        current = self.lines[data.target]
+        owner = self.line_matches.get(data.target)
+        if owner is not None:
+            raise ValidationError(
+                f"statement line {data.target} is matched by {owner}; correct or void that entry first"
+            )
+        replacement = None
+        if data.replacement is not None:
+            replacement = parse_data(RecordKind.LINE, data.replacement)
+            self._require_evidence(replacement.evidence)
+            self._account(replacement.account)
+            if replacement.fingerprint != current.fingerprint:
+                self._check_fingerprint(replacement.fingerprint)
+        del self.lines[data.target]
+        del self.line_fingerprints[current.fingerprint]
+        self._replace(data.target, record, replacement=replacement is not None)
+        if replacement is not None:
+            self.lines[record.id] = replacement
+            self.line_fingerprints[replacement.fingerprint] = record.id
+
+    def _correct_account(self, record: Record, data: CorrectionData) -> None:
+        name = self.account_records[data.target]
+        account = self.accounts[name]
+        if data.target == account.open_record:
+            self._correct_open(record, data, account)
+        elif data.target == account.close_record:
+            self._correct_close(record, data, account)
+        else:
+            raise ValidationError(f"{data.target} is not the current open or close record of {name}")
+        del self.account_records[data.target]
+
+    def _postings_to(self, name: str) -> list[EntryVersion]:
+        return [v for v in self.entries.values() if any(p.account == name for p in v.data.postings)]
+
+    def _correct_open(self, record: Record, data: CorrectionData, account: AccountState) -> None:
+        name = account.name
+        if data.replacement is None:
+            if self._postings_to(name) or any(line.account == name for line in self.lines.values()):
+                raise ValidationError(f"cannot void the opening of {name}: entries or statement lines use it")
+            del self.accounts[name]
+            self._replace(data.target, record, replacement=False)
+            return
+        replacement = parse_data(RecordKind.ACCOUNT_OPEN, data.replacement)
+        if replacement.account != name:
+            raise ValidationError(f"an account correction must keep the same account ({name})")
+        stranded = sorted(v.id for v in self._postings_to(name) if v.data.date < replacement.date)
+        if stranded:
+            raise ValidationError(f"{name} has entries before {replacement.date}: {', '.join(stranded)}")
+        if account.closed is not None and account.closed < replacement.date:
+            raise ValidationError(f"{name} was closed on {account.closed}, before {replacement.date}")
+        if replacement.commodities:
+            for version in self._postings_to(name):
+                for posting in version.data.postings:
+                    if posting.account == name and posting.commodity not in replacement.commodities:
+                        raise ValidationError(f"{version.id} posts {posting.commodity} to {name}")
+        account.opened = replacement.date
+        account.commodities = tuple(replacement.commodities)
+        account.description = replacement.description
+        account.open_record = record.id
+        self.account_records[record.id] = name
+        self._replace(data.target, record, replacement=True)
+
+    def _correct_close(self, record: Record, data: CorrectionData, account: AccountState) -> None:
+        if data.replacement is None:
+            account.closed = None
+            account.close_record = None
+            self._replace(data.target, record, replacement=False)
+            return
+        replacement = parse_data(RecordKind.ACCOUNT_CLOSE, data.replacement)
+        if replacement.account != account.name:
+            raise ValidationError(f"an account correction must keep the same account ({account.name})")
+        self._check_close(account, replacement)
+        account.closed = replacement.date
+        account.close_record = record.id
+        self.account_records[record.id] = account.name
+        self._replace(data.target, record, replacement=True)
 
     def _apply_price(self, record: Record, data: PriceData) -> None:
         if Decimal(data.rate) <= 0:
@@ -319,7 +447,8 @@ class BookState:
         self.prices.append((record.id, data))
 
     def _apply_reconciliation(self, record: Record, data: ReconciliationData) -> None:
-        self._account(data.account)
+        if not any(name == data.account or name.startswith(data.account + ":") for name in self.accounts):
+            raise ValidationError(f"no account {data.account} or sub-account is open")
         for ref in data.evidence:
             self._require_evidence(ref)
         self.reconciliations.append((record.id, data))
@@ -393,6 +522,9 @@ class BookState:
         for ref in data.evidence:
             self._require_evidence(ref)
         released = set(releasing.data.lines) if releasing else set()
+        if len(set(data.lines)) != len(data.lines):
+            raise ValidationError("an entry cites the same statement line more than once")
+        cited: dict[tuple[str, str], Decimal] = defaultdict(Decimal)
         for line_id in data.lines:
             line = self.lines.get(line_id)
             if line is None:
@@ -400,15 +532,15 @@ class BookState:
             owner = self.line_matches.get(line_id)
             if owner is not None and line_id not in released:
                 raise ValidationError(f"statement line {line_id} is already matched by {owner}")
-            if not any(
-                p.account == line.account
-                and p.commodity == line.commodity
-                and Decimal(p.amount) == Decimal(line.amount)
-                for p in data.postings
-            ):
+            cited[(line.account, line.commodity)] += Decimal(line.amount)
+        for (account, commodity), total in cited.items():
+            posted = sum(
+                (Decimal(p.amount) for p in data.postings if p.account == account and p.commodity == commodity),
+                Decimal(0),
+            )
+            if posted != total:
                 raise ValidationError(
-                    f"entry has no posting of {line.amount} {line.commodity} to {line.account} "
-                    f"matching statement line {line_id}"
+                    f"entry posts {posted} {commodity} to {account} but its statement lines total {total}"
                 )
         transaction = to_transaction(record_id, data)
         return balance_transaction(transaction)
@@ -424,22 +556,22 @@ class BookState:
 
     # -- queries ------------------------------------------------------------
 
-    def current_version(self, entry_id: str) -> str | None:
+    def current_version(self, record_id: str) -> str | None:
         """Follow corrections from any version id to the current one.
 
         Args:
-            entry_id: An entry or correction id.
+            record_id: An entry, statement line, account record, or correction id.
 
         Returns:
-            The current version id, or ``None`` if the entry was voided or is unknown.
+            The current version id, or ``None`` if the record was voided or is unknown.
 
         """
         seen = set()
-        current = entry_id
+        current = record_id
         while current in self.superseded and current not in seen:
             seen.add(current)
             current = self.superseded[current]
-        return current if current in self.entries else None
+        return current if current in self.entries or current in self.lines or current in self.account_records else None
 
     def unmatched_lines(self) -> list[str]:
         """Return statement line ids not accounted for by any current entry.
@@ -557,11 +689,39 @@ def to_transaction(record_id: str, data: EntryData) -> Transaction:
     )
 
 
-def resolve_refs(value: Any, produced: list[str]) -> Any:
-    """Replace ``"$N"`` placeholders with the id of the N-th produced record.
+def _is_ref(value: Any) -> bool:
+    return isinstance(value, str) and len(value) > 1 and value[0] == "$" and value[1:].isdigit()
+
+
+def has_refs(value: Any) -> bool:
+    """Report whether a payload carries ``"$N"`` references in reference fields.
 
     Args:
-        value: A JSON-compatible value.
+        value: A JSON-compatible payload.
+
+    Returns:
+        ``True`` if any reference field holds a ``"$N"`` placeholder.
+
+    """
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if key in REFERENCE_KEYS and (_is_ref(item) or (isinstance(item, list) and any(_is_ref(i) for i in item))):
+                return True
+            if isinstance(item, (Mapping, list)) and has_refs(item):
+                return True
+    elif isinstance(value, list):
+        return any(has_refs(item) for item in value)
+    return False
+
+
+def resolve_refs(value: Any, produced: list[str]) -> Any:
+    """Replace ``"$N"`` placeholders in reference fields with the id of the N-th produced record.
+
+    Only the values of :data:`REFERENCE_KEYS` (and the items of lists held there)
+    are resolved; free text such as descriptions is never rewritten.
+
+    Args:
+        value: A JSON-compatible payload.
         produced: Ids of the records produced so far, in change order.
 
     Returns:
@@ -571,13 +731,23 @@ def resolve_refs(value: Any, produced: list[str]) -> Any:
         ValidationError: If a placeholder points at a change not yet produced.
 
     """
-    if isinstance(value, str) and len(value) > 1 and value[0] == "$" and value[1:].isdigit():
-        index = int(value[1:])
+
+    def resolve(item: Any) -> Any:
+        if not _is_ref(item):
+            return item
+        index = int(item[1:])
         if index >= len(produced):
-            raise ValidationError(f"reference {value} points at a change that has not been produced yet")
+            raise ValidationError(f"reference {item} points at a change that has not been produced yet")
         return produced[index]
-    if isinstance(value, list):
-        return [resolve_refs(item, produced) for item in value]
+
     if isinstance(value, Mapping):
-        return {key: resolve_refs(item, produced) for key, item in value.items()}
+        out = {}
+        for key, item in value.items():
+            if key in REFERENCE_KEYS:
+                out[key] = [resolve(i) for i in item] if isinstance(item, list) else resolve(item)
+            else:
+                out[key] = resolve_refs(item, produced) if isinstance(item, (Mapping, list)) else item
+        return out
+    if isinstance(value, list):
+        return [resolve_refs(item, produced) if isinstance(item, (Mapping, list)) else item for item in value]
     return value

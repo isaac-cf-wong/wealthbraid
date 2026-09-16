@@ -35,6 +35,14 @@ def bank_book(book: Book) -> Book:
     return book
 
 
+def _import(book: Book, path, **kwargs):
+    """Import a statement and approve its lines as the human reviewer."""
+    result = import_csv(book, path, actor=AGENT, profile=PROFILE, account="Assets:Bank:Checking", **kwargs)
+    if result.operation is not None:
+        result.operation = book.decide(result.operation.id, actor=HUMAN, verdict="approve")
+    return result
+
+
 def _write(tmp_path, content: bytes = STATEMENT, name: str = "feb.csv"):
     path = tmp_path / name
     path.write_bytes(content)
@@ -73,11 +81,13 @@ def test_identical_rows_get_distinct_fingerprints():
     assert len(set(prints)) == 4
 
 
-def test_import_creates_evidence_and_auto_applied_lines(bank_book, tmp_path):
-    """Import stores the file and records lines without touching balances."""
+def test_import_creates_evidence_and_lines_after_approval(bank_book, tmp_path):
+    """Import stores the file; lines wait for approval and never touch balances."""
     result = import_csv(bank_book, _write(tmp_path), actor=AGENT, profile=PROFILE, account="Assets:Bank:Checking")
     assert (result.rows, result.new_lines, result.duplicates) == (4, 4, [])
-    assert result.operation.status == "applied"
+    assert result.operation.status == "pending"
+    assert bank_book.state().lines == {}
+    result.operation = bank_book.decide(result.operation.id, actor=HUMAN, verdict="approve")
     assert result.operation.data.evidence == [result.evidence]
     assert result.operation.data.inputs["profile"]["account"] == "Assets:Bank:Checking"
     state = bank_book.state()
@@ -88,8 +98,8 @@ def test_import_creates_evidence_and_auto_applied_lines(bank_book, tmp_path):
 
 def test_reimport_skips_duplicates_but_keeps_new_rows(bank_book, tmp_path):
     """An overlapping statement only adds rows not seen before."""
-    import_csv(bank_book, _write(tmp_path), actor=AGENT, profile=PROFILE, account="Assets:Bank:Checking")
-    again = import_csv(bank_book, _write(tmp_path), actor=AGENT, profile=PROFILE, account="Assets:Bank:Checking")
+    _import(bank_book, _write(tmp_path))
+    again = _import(bank_book, _write(tmp_path))
     assert (again.new_lines, again.duplicates, again.operation) == (0, [2, 3, 4, 5], None)
     extended = STATEMENT + b"05/02/2026,BOOKSHOP,-12.00\n"
     third = import_csv(
@@ -107,7 +117,7 @@ def test_import_requires_open_account(book, tmp_path):
 
 def test_rule_categorization_proposes_matching_entries(bank_book, tmp_path):
     """Rules produce one pending entry per matched line; unmatched lines remain."""
-    import_csv(bank_book, _write(tmp_path), actor=AGENT, profile=PROFILE, account="Assets:Bank:Checking")
+    _import(bank_book, _write(tmp_path))
     bank_book.config = dataclasses.replace(
         bank_book.config,
         rules=(
@@ -139,7 +149,7 @@ def test_rule_categorization_proposes_matching_entries(bank_book, tmp_path):
 
 def test_agent_assignments_need_reasoning_and_valid_lines(bank_book, tmp_path):
     """Explicit assignments carry reasoning and per-line confidence; bad lines are refused."""
-    import_csv(bank_book, _write(tmp_path), actor=AGENT, profile=PROFILE, account="Assets:Bank:Checking")
+    _import(bank_book, _write(tmp_path))
     lines = bank_book.state().unmatched_lines()
     coffee = [line for line in lines if bank_book.state().lines[line].description == "COFFEE BAR"]
     assignments = [
@@ -161,7 +171,7 @@ def test_agent_assignments_need_reasoning_and_valid_lines(bank_book, tmp_path):
 
 def test_reconcile_reports_difference_explained_by_unmatched_lines(bank_book, tmp_path):
     """Before categorizing, the whole statement movement is explained by unmatched lines."""
-    import_csv(bank_book, _write(tmp_path), actor=AGENT, profile=PROFILE, account="Assets:Bank:Checking")
+    _import(bank_book, _write(tmp_path))
     comparison, operation = reconcile(
         bank_book,
         actor=AGENT,

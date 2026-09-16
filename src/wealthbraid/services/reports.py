@@ -10,16 +10,18 @@ from __future__ import annotations
 
 import datetime as dt
 from collections import defaultdict
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
 
 from wealthbraid.book.state import BookState
 from wealthbraid.engine.account import AccountType, parse_account_name
 from wealthbraid.engine.inventory import Inventory
-from wealthbraid.engine.money import Commodity
-from wealthbraid.engine.prices import value_inventory
+from wealthbraid.engine.money import Amount, Commodity
+from wealthbraid.engine.prices import Price
 
 _ZERO = Decimal(0)
+_CENT = Decimal("0.01")
+_PRICE_TOLERANCE = Decimal("0.01")
 
 
 def basis(state: BookState, **parameters: Any) -> dict[str, Any]:
@@ -30,12 +32,16 @@ def basis(state: BookState, **parameters: Any) -> dict[str, Any]:
         **parameters: The report parameters (dates are converted to ISO strings).
 
     Returns:
-        The head record id, record count, and parameters.
+        The head record id, record count, counts of issues (records excluded
+        from the ledger) and integrity issues (records whose content or chain
+        link is broken), and the parameters.
 
     """
     return {
         "as_of_record": state.head.id if state.head else None,
         "records": len(state.records),
+        "issues": len(state.issues),
+        "integrity_issues": len(state.integrity_issues),
         "parameters": {
             key: value.isoformat() if isinstance(value, dt.date) else value
             for key, value in parameters.items()
@@ -135,7 +141,12 @@ def income_statement(state: BookState, *, start: dt.date | None, end: dt.date | 
 def net_worth(state: BookState, *, as_of: dt.date, currency: str) -> dict[str, Any]:
     """Return assets, liabilities, and net worth valued in one currency.
 
-    Holdings without a price path to ``currency`` are reported separately rather than dropped.
+    Converted amounts are rounded to cents; native amounts are kept as recorded.
+    The report lists every recorded price it relied on, with its date and age,
+    and warns when a pair has direct and inverse prices that disagree by more
+    than one percent. Holdings without a price path to ``currency`` are reported
+    per side in ``unvalued_assets`` and ``unvalued_liabilities`` rather than
+    dropped or netted.
 
     Args:
         state: The book state.
@@ -143,35 +154,84 @@ def net_worth(state: BookState, *, as_of: dt.date, currency: str) -> dict[str, A
         currency: The reporting currency.
 
     Returns:
-        Valued totals, the unvalued remainder, and the per-account breakdown.
+        Valued totals, unvalued remainders, the prices used, price warnings, and
+        the per-account breakdown.
 
     """
     ledger = state.ledger(end=as_of)
     prices = ledger.price_db()
     target = Commodity(currency)
-    assets, liabilities = Inventory(), Inventory()
+    totals = {AccountType.ASSETS: Inventory(), AccountType.LIABILITIES: Inventory()}
+    used: dict[tuple[str, str, dt.date], Price] = {}
     rows = []
     for name, inventory in sorted(ledger.account_balances().items()):
         kind = _account_type(name)
-        if inventory.is_empty() or kind not in (AccountType.ASSETS, AccountType.LIABILITIES):
+        if inventory.is_empty() or kind not in totals:
             continue
-        valued = value_inventory(inventory, target, prices, as_of)
-        rows.append({"account": name, "balance": amounts(inventory), "value": amounts(valued)})
-        if kind is AccountType.ASSETS:
-            assets = assets.merge(valued)
-        else:
-            liabilities = liabilities.merge(valued)
-    total = assets.merge(liabilities)
+        valued = []
+        for amount in inventory.amounts():
+            steps = prices.path(amount.commodity, target, as_of)
+            if steps is None:
+                valued.append(amount)
+                continue
+            rate = Decimal(1)
+            for step in steps:
+                rate *= step.rate
+                used[(step.price.base.code, step.price.quote.code, step.price.date)] = step.price
+            quantity = amount.quantity * rate
+            if steps:
+                quantity = quantity.quantize(_CENT, rounding=ROUND_HALF_EVEN)
+            valued.append(Amount(quantity, target))
+        value = Inventory.from_amounts(valued)
+        rows.append({"account": name, "balance": amounts(inventory), "value": amounts(value)})
+        totals[kind] = totals[kind].merge(value)
+    assets, liabilities = totals[AccountType.ASSETS], totals[AccountType.LIABILITIES]
     return {
         "report": "net-worth",
         "basis": basis(state, as_of=as_of, currency=currency),
         "currency": currency,
         "assets": str(assets.get(target)),
         "liabilities": str(liabilities.get(target)),
-        "net_worth": str(total.get(target)),
-        "unvalued": {code: qty for code, qty in amounts(total).items() if code != currency},
+        "net_worth": str(assets.merge(liabilities).get(target)),
+        "unvalued_assets": {code: qty for code, qty in amounts(assets).items() if code != currency},
+        "unvalued_liabilities": {code: qty for code, qty in amounts(liabilities).items() if code != currency},
+        "prices_used": [
+            {
+                "base": price.base.code,
+                "quote": price.quote.code,
+                "rate": str(price.rate.quantity),
+                "date": price.date.isoformat(),
+                "age_days": (as_of - price.date).days,
+            }
+            for _, price in sorted(used.items())
+        ],
+        "price_warnings": price_warnings(prices.latest(as_of)),
         "accounts": rows,
     }
+
+
+def price_warnings(latest: dict[tuple[Commodity, Commodity], Price]) -> list[str]:
+    """Flag pairs whose direct and inverse prices disagree by more than one percent.
+
+    Args:
+        latest: The latest price per directed pair.
+
+    Returns:
+        One human-readable warning per inconsistent pair.
+
+    """
+    warnings = []
+    for (base, quote), price in sorted(latest.items(), key=lambda item: (item[0][0].code, item[0][1].code)):
+        inverse = latest.get((quote, base))
+        if inverse is None or base.code > quote.code:
+            continue
+        product = price.rate.quantity * inverse.rate.quantity
+        if abs(product - 1) > _PRICE_TOLERANCE:
+            warnings.append(
+                f"{base.code}/{quote.code} {price.rate.quantity} ({price.date}) and "
+                f"{quote.code}/{base.code} {inverse.rate.quantity} ({inverse.date}) disagree: product {product}"
+            )
+    return warnings
 
 
 def _month_start(day: dt.date) -> dt.date:

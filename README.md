@@ -23,13 +23,14 @@ can be traced back to the evidence, the reasoning, and the decision behind it.
 - **Provenance for every change.** Every change is an _operation_. It records
   the actor, inputs, evidence, reasoning summary, confidence, proposed records,
   approval status, and resulting record ids.
-- **Humans approve sensitive changes.** Only a `human:` actor can approve.
-  Evidence, statement lines, and notes don't change balances, so policy may
-  apply them automatically. Approval re-checks the proposal against the book as
-  it is at that moment.
+- **Humans approve sensitive changes.** Only a `human:` actor can approve, and
+  every command that writes must name its actor explicitly. Only evidence and
+  notes, which neither change balances nor decide what enters the book, may be
+  applied automatically by policy. Imported statement lines wait for approval.
+  Approval re-checks the proposal against the book as it is at that moment.
 - **Private by design.** No telemetry and no network calls. wealthbraid never
-  calls a model provider itself. The web UI binds to loopback and loads no
-  external assets.
+  calls a model provider itself. The web UI serves only loopback clients and
+  loads no external assets.
 
 ## Installation
 
@@ -45,10 +46,10 @@ uv sync && uv run wealthbraid --help
 wealthbraid init ~/finances --name "Household" --currency EUR --user alice
 cd ~/finances && git init        # optional; the log only ever grows
 
-# You (in a terminal, acting as human:alice) set up accounts
-wealthbraid open Assets:Bank:Checking Income:Salary Expenses:Groceries --date 2026-01-01 --approve
+# You set up accounts. Every write names its actor; --actor and --book go before the command.
+wealthbraid --actor human:alice open Assets:Bank:Checking Income:Salary Expenses:Groceries --date 2026-01-01 --approve
 
-# An agent imports and categorizes (non-interactive callers must identify themselves)
+# An agent imports and categorizes
 export WEALTHBRAID_ACTOR=agent:claude
 wealthbraid import csv statement.csv --account Assets:Bank:Checking \
   --date-column Date --amount-column Amount --description-column Description
@@ -59,7 +60,7 @@ wealthbraid reconcile Assets:Bank:Checking --date 2026-08-31 --balance 6384.56
 # You review and decide, in the browser or the terminal
 wealthbraid serve                                        # http://127.0.0.1:8765
 wealthbraid review
-wealthbraid ops approve opr_…  --actor human:alice
+wealthbraid --actor human:alice ops approve opr_…   # the imported lines, then the categorization
 ```
 
 Then ask questions of the book:
@@ -86,8 +87,9 @@ reproduces a past view exactly.
 | Workflow   | `propose`, `review`, `ops list/show/approve/reject`, `note add`                          |
 | Analysis   | `report balances/income/networth/cashflow`, `explain change`, `scenario run/template`    |
 
-Every command accepts `--json`. See [the agent guide](docs/agents.md) for the
-machine contract and [the architecture](docs/architecture.md) for the design.
+Every command accepts `--json`. See [the agent guide](docs/agent-guide.md) for
+the machine contract and [the architecture](docs/architecture.md) for the
+design.
 
 ## Development
 

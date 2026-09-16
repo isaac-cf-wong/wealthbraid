@@ -5,8 +5,12 @@ Output contract (stable for agents):
 * With ``--json`` (or ``WEALTHBRAID_JSON=1``) stdout carries exactly one JSON
   document and nothing else.
 * Errors go to stderr; with ``--json`` they are ``{"error": {"code", "message"}}``.
-* Exit codes: 0 ok, 1 error, 2 usage, 3 not found, 4 validation, 5 integrity,
-  6 policy (e.g. an agent tried to approve), 7 conflict.
+* Exit codes: 0 ok, 1 error (``io`` for file-system failures), 2 usage, 3 not
+  found, 4 validation, 5 integrity, 6 policy (e.g. an agent tried to approve, or
+  no actor was given), 7 conflict. Command-line parsing errors follow the same
+  shape when the process is started through :func:`wealthbraid.cli.main.run`.
+* ``verify`` is a report: it prints its result on stdout even when the book
+  fails verification, and exits 5 in that case.
 """
 
 from __future__ import annotations
@@ -15,7 +19,7 @@ import datetime as dt
 import functools
 import json
 import os
-import sys
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
@@ -24,10 +28,17 @@ from typing import Annotated, Any
 
 import typer
 
-from wealthbraid.book.book import Book
-from wealthbraid.book.state import OperationState
+from wealthbraid.book.book import Book, check_actor
+from wealthbraid.book.state import BookState, OperationState
 from wealthbraid.engine.errors import EngineError
-from wealthbraid.errors import PolicyError, UsageError, ValidationError, WealthbraidError
+from wealthbraid.errors import (
+    NotFoundError,
+    PolicyError,
+    StorageError,
+    UsageError,
+    ValidationError,
+    WealthbraidError,
+)
 
 ACTOR_ENV = "WEALTHBRAID_ACTOR"
 JSON_ENV = "WEALTHBRAID_JSON"
@@ -50,6 +61,7 @@ class GlobalOptions:
 
 
 OPTIONS = GlobalOptions()
+_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def json_wanted(flag: bool) -> bool:
@@ -75,31 +87,99 @@ def open_book() -> Book:
     return Book.discover(OPTIONS.book)
 
 
-def resolve_actor(book: Book) -> str:
-    """Determine who is acting.
+def given_actor() -> str | None:
+    """Return the validated actor from ``--actor`` or ``WEALTHBRAID_ACTOR``, if any.
 
-    Precedence: ``--actor``, then ``WEALTHBRAID_ACTOR``, then — only in an
-    interactive terminal — the book's configured human. Non-interactive callers
-    (scripts and agents) must identify themselves.
+    Returns:
+        The actor string, or ``None`` if none was given.
+
+    Raises:
+        PolicyError: If the given actor is malformed.
+
+    """
+    actor = OPTIONS.actor if OPTIONS.actor is not None else os.environ.get(ACTOR_ENV)
+    if actor is None or actor == "":
+        return None
+    return check_actor(actor)
+
+
+def resolve_actor(book: Book) -> str:
+    """Determine who is acting for a command that writes.
+
+    An identity is never inferred from the environment: a terminal being
+    attached says nothing about whether a human or an agent is typing, so every
+    write must name its actor with ``--actor`` or ``WEALTHBRAID_ACTOR``.
 
     Args:
-        book: The book, for its configured user.
+        book: The book (its configured human is named in the error message).
 
     Returns:
         The actor string.
 
     Raises:
-        PolicyError: If no actor is given in a non-interactive session.
+        PolicyError: If no actor is given.
 
     """
-    actor = OPTIONS.actor or os.environ.get(ACTOR_ENV)
-    if actor:
+    actor = given_actor()
+    if actor is not None:
         return actor
-    if sys.stdin.isatty() and sys.stdout.isatty():
-        return book.config.human_actor
     raise PolicyError(
-        f"non-interactive use must identify the actor: pass --actor agent:<name> (or human:<name>) or set {ACTOR_ENV}"
+        f"this command writes to the book, so it must name its actor: pass --actor {book.config.human_actor} "
+        f"(or agent:<name>) before the command, or set {ACTOR_ENV}"
     )
+
+
+def read_state(at: str | None = None, book: Book | None = None) -> BookState:
+    """Load book state for a read command, warning on stderr if integrity checks fail.
+
+    Records that fail integrity checks are already excluded from the state, so
+    the numbers never include tampered content; the warning tells the reader
+    that the book needs ``wealthbraid verify``.
+
+    Args:
+        at: Stop at this record id, if given.
+        book: The book; opened from the global options when omitted.
+
+    Returns:
+        The book state.
+
+    """
+    given_actor()
+    state = (book or open_book()).state(at=at)
+    if state.integrity_issues:
+        typer.secho(
+            f"warning: {len(state.integrity_issues)} record(s) fail integrity checks and were excluded; "
+            "run `wealthbraid verify`",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+    return state
+
+
+def read_input(path: Path) -> str:
+    """Read a UTF-8 input file, or stdin when the path is ``-``.
+
+    Args:
+        path: The path given on the command line.
+
+    Returns:
+        The file content.
+
+    Raises:
+        NotFoundError: If the file does not exist.
+        UsageError: If the path is a directory or the content is not UTF-8.
+
+    """
+    if str(path) == "-":
+        return typer.get_text_stream("stdin").read()
+    if path.is_dir():
+        raise UsageError(f"{path} is a directory, not a file")
+    if not path.exists():
+        raise NotFoundError(f"file not found: {path}")
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise UsageError(f"{path} is not UTF-8 text: {exc}") from exc
 
 
 def _default(value: Any) -> Any:
@@ -148,15 +228,33 @@ def handle_errors[F: Callable[..., Any]](func: F) -> F:
             _fail(exc, kwargs.get("as_json", False))
         except EngineError as exc:
             _fail(ValidationError(str(exc)), kwargs.get("as_json", False))
+        except FileNotFoundError as exc:
+            _fail(NotFoundError(f"file not found: {exc.filename}"), kwargs.get("as_json", False))
+        except (IsADirectoryError, NotADirectoryError, UnicodeDecodeError) as exc:
+            _fail(UsageError(str(exc)), kwargs.get("as_json", False))
+        except OSError as exc:
+            _fail(StorageError(str(exc)), kwargs.get("as_json", False))
 
     return wrapper  # type: ignore[return-value]
 
 
-def _fail(exc: WealthbraidError, as_json: bool) -> None:
+def fail_message(code: str, message: str, as_json: bool) -> None:
+    """Print an error in the CLI error shape.
+
+    Args:
+        code: The error code.
+        message: The message.
+        as_json: Whether JSON output was requested.
+
+    """
     if json_wanted(as_json):
-        typer.echo(json.dumps({"error": {"code": exc.code, "message": str(exc)}}), err=True)
+        typer.echo(json.dumps({"error": {"code": code, "message": message}}), err=True)
     else:
-        typer.secho(f"error [{exc.code}]: {exc}", fg=typer.colors.RED, err=True)
+        typer.secho(f"error [{code}]: {message}", fg=typer.colors.RED, err=True)
+
+
+def _fail(exc: WealthbraidError, as_json: bool) -> None:
+    fail_message(exc.code, str(exc), as_json)
     raise typer.Exit(exc.exit_code)
 
 
@@ -180,6 +278,8 @@ def parse_date(value: str | None, name: str, *, default: dt.date | None = None) 
             raise UsageError(f"{name} is required (YYYY-MM-DD)")
         return default
     try:
+        if not _DATE_RE.fullmatch(value):
+            raise ValueError(value)
         return dt.date.fromisoformat(value)
     except ValueError as exc:
         raise UsageError(f"{name} must be a date (YYYY-MM-DD), got {value!r}") from exc
@@ -243,6 +343,7 @@ def operation_json(operation: OperationState) -> dict[str, Any]:
         "confidence": operation.data.confidence,
         "evidence": operation.data.evidence,
         "inputs": operation.data.inputs,
+        "book": str(OPTIONS.book.resolve()) if OPTIONS.book else None,
         "base": operation.data.base,
         "sensitive": operation.sensitive,
         "changes": [change.model_dump(mode="json", exclude_none=True) for change in operation.data.changes],
