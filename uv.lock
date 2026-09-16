@@ -1709,7 +1709,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 build = [{ name = "hatch", specifier = ">=1.18.0" }]
 dev = [
-    { name = "httpx", specifier = ">=0.28" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "mutmut", specifier = ">=3.8.0" },
     { name = "prek", specifier = ">=0.5.3" },
     { name = "pytest", specifier = ">=9.1.1" },
