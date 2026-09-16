@@ -8,8 +8,7 @@ import re
 from pathlib import Path
 
 import pytest
-from conftest import AGENT, HUMAN, entry
-from fastapi.testclient import TestClient
+from conftest import AGENT, HUMAN, client_for, entry
 
 from wealthbraid.web.app import create_app
 
@@ -20,7 +19,7 @@ PAYLOAD = '<img src=x onerror="alert(1)">'
 
 @pytest.fixture
 def client(funded_book):
-    return TestClient(create_app(funded_book, port=8765), base_url=BASE, raise_server_exceptions=False, client=LOCAL)
+    return client_for(create_app(funded_book, port=8765), base_url=BASE, raise_server_exceptions=False, client=LOCAL)
 
 
 def _token(html: str) -> str:
@@ -157,13 +156,13 @@ def test_categorize_endpoint_checks_token_and_origin(client, funded_book):
 )
 def test_host_header_must_be_exact(funded_book, host):
     app = create_app(funded_book, port=8765)
-    response = TestClient(app, base_url=BASE, client=LOCAL).get("/", headers={"host": host})
+    response = client_for(app, base_url=BASE, client=LOCAL).get("/", headers={"host": host})
     assert response.status_code == 400
 
 
 def test_requests_from_non_loopback_clients_are_refused(funded_book):
     app = create_app(funded_book, port=8765)
-    remote = TestClient(app, base_url=BASE, client=("192.168.1.20", 50000))
+    remote = client_for(app, base_url=BASE, client=("192.168.1.20", 50000))
     assert remote.get("/").status_code == 403
 
 
@@ -174,7 +173,7 @@ def test_security_headers_on_every_response_including_errors(funded_book):
     def boom():
         raise RuntimeError("boom")
 
-    client = TestClient(app, base_url=BASE, raise_server_exceptions=False, client=LOCAL)
+    client = client_for(app, base_url=BASE, raise_server_exceptions=False, client=LOCAL)
     for path, status in (("/", 200), ("/trace/nope", 404), ("/boom", 500)):
         response = client.get(path)
         assert response.status_code == status

@@ -94,9 +94,11 @@ def test_multiplication_by_scalar():
 
 
 def test_multiplication_by_float_rejected():
-    """Scaling by a float is rejected."""
-    with pytest.raises(InvalidAmountError):
+    """Scaling by a float (or a bool) is a TypeError."""
+    with pytest.raises(TypeError):
         Amount.of("1.50", "USD") * 1.5
+    with pytest.raises(TypeError):
+        Amount.of("1.50", "USD") * True
 
 
 def test_is_zero_with_tolerance():

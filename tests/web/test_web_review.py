@@ -5,8 +5,7 @@ from __future__ import annotations
 import re
 
 import pytest
-from conftest import AGENT, entry
-from fastapi.testclient import TestClient
+from conftest import AGENT, client_for, entry
 
 from wealthbraid.web.app import create_app
 
@@ -15,7 +14,7 @@ BASE = "http://127.0.0.1:8765"
 
 @pytest.fixture
 def client(funded_book):
-    return TestClient(create_app(funded_book, port=8765), base_url=BASE, client=("127.0.0.1", 50000))
+    return client_for(create_app(funded_book, port=8765), base_url=BASE, client=("127.0.0.1", 50000))
 
 
 def _token(html: str) -> str:
@@ -84,7 +83,7 @@ def test_write_without_token_or_from_other_origin_is_refused(client, funded_book
 
 
 def test_non_loopback_host_header_is_refused(funded_book):
-    rebinding = TestClient(create_app(funded_book), base_url="http://attacker.example", client=("127.0.0.1", 50000))
+    rebinding = client_for(create_app(funded_book), base_url="http://attacker.example", client=("127.0.0.1", 50000))
     assert rebinding.get("/").status_code == 400
 
 

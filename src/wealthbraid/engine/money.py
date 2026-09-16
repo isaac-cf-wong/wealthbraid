@@ -185,14 +185,13 @@ class Amount:
             factor: The scalar multiplier (Decimal, int, or decimal string).
 
         Returns:
-            The scaled amount as a new :class:`Amount`.
-
-        Raises:
-            InvalidAmountError: If ``factor`` is a float or not numeric.
+            The scaled amount as a new :class:`Amount`, or ``NotImplemented`` for
+            floats, booleans, and non-numeric factors, so Python raises
+            ``TypeError`` rather than letting floating-point error in.
 
         """
         if isinstance(factor, bool) or not isinstance(factor, self._COERCIBLE):
-            raise InvalidAmountError(f"Cannot scale an amount by {type(factor).__name__}")
+            return NotImplemented
         return Amount(self.quantity * Decimal(factor), self.commodity)
 
     def is_zero(self, tolerance: Decimal | None = None) -> bool:

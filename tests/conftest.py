@@ -87,3 +87,19 @@ def funded_book(book: Book) -> Book:
         approve=True,
     )
     return book
+
+
+def client_for(app, *, client: tuple[str, int] = ("127.0.0.1", 50000), **kwargs):
+    """Return a TestClient whose requests come from ``client``.
+
+    Older Starlette versions have no ``client`` argument on ``TestClient``, so
+    the address is set by a thin ASGI wrapper instead.
+    """
+    from starlette.testclient import TestClient
+
+    async def with_client(scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            scope = {**scope, "client": client}
+        await app(scope, receive, send)
+
+    return TestClient(with_client, **kwargs)

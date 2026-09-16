@@ -38,7 +38,13 @@ _LOCK_NAME = "lock"
 
 
 def _fsync_dir(path: Path) -> None:
-    """Flush a directory entry so a new or renamed file survives power loss."""
+    """Flush a directory entry so a new or renamed file survives power loss.
+
+    Windows cannot open a directory as a file descriptor; NTFS journals the
+    metadata change itself, so there is nothing to do there.
+    """
+    if os.name == "nt":
+        return
     fd = os.open(path, os.O_RDONLY)
     try:
         os.fsync(fd)
@@ -54,6 +60,15 @@ def _read_holder(lock_path: Path) -> int | None:
 
 
 def _process_alive(pid: int) -> bool:
+    """Report whether a process exists, without signalling it.
+
+    On Windows ``os.kill(pid, 0)`` terminates the process, so the process is
+    queried through the Win32 API instead.
+    """
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        return _windows_process_alive(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -63,6 +78,26 @@ def _process_alive(pid: int) -> bool:
     except OverflowError:
         return False
     return True
+
+
+def _windows_process_alive(pid: int) -> bool:  # pragma: no cover - exercised on Windows CI
+    import ctypes  # noqa: PLC0415
+    from ctypes import wintypes  # noqa: PLC0415
+
+    process_query_limited_information = 0x1000
+    still_active = 259
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        # Access denied means the process exists but belongs to someone else.
+        return ctypes.get_last_error() == 5  # noqa: PLR2004 - ERROR_ACCESS_DENIED
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True
+        return code.value == still_active
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def utc_now() -> dt.datetime:
@@ -277,8 +312,10 @@ class RecordStore:
         else:
             raise ConflictError(f"could not acquire the book lock ({lock_path})")
         try:
-            os.write(fd, me.encode())
-            os.close(fd)
+            try:
+                os.write(fd, me.encode())
+            finally:
+                os.close(fd)
             yield
         finally:
             if _read_holder(lock_path) == int(me):

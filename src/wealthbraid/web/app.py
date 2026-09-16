@@ -311,7 +311,8 @@ def create_app(book: Book, *, port: int | None = None) -> FastAPI:  # noqa: PLR0
                 "_operation_card.html",
                 {"state": state, "op": operation_view(state, operation), "error": error},
             )
-        return RedirectResponse(f"/operations/{operation_id}", status_code=303)
+        # Redirect to the id stored in the book, never to the raw path parameter.
+        return RedirectResponse(f"/operations/{operation.id}", status_code=303)
 
     @app.get("/lines", response_class=HTMLResponse)
     def lines(request: Request) -> HTMLResponse:
