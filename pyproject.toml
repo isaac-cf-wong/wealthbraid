@@ -1,0 +1,187 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "python_package_template"
+authors = [{ name = "Isaac C. F. Wong" }]
+description = "A GitHub template repository for a Python package"
+readme = "README.md"
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: BSD License",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+]
+requires-python = ">=3.12"
+dynamic = ["version"]
+dependencies = ["typer>=0.26.8"]
+
+[dependency-groups]
+dev = [
+  "ruff>=0.16.7",
+  "prek>=0.5.3",
+  "pytest-github-actions-annotate-failures>=0.4.2",
+  "pytest-cov>=7.1.0",
+  "pytest-mock>=3.15.1",
+  "pytest>=9.1.1",
+  "mutmut>=3.8.0",
+]
+docs = ["zensical>=0.0.61", "mkdocstrings-python>=2.0.8"]
+build = ["hatch>=1.18.0"]
+release = ["git-cliff>=2.13.1"]
+
+[project.scripts]
+python_package_template = "python_package_template.cli.main:app"
+
+[project.urls]
+Documentation = "https://isaac-cf-wong.github.io/python-package-template"
+Source = "https://github.com/isaac-cf-wong/python-package-template"
+Tracker = "https://github.com/isaac-cf-wong/python-package-template/issues"
+Home = "https://github.com/isaac-cf-wong/python-package-template"
+"Release Notes" = "https://github.com/isaac-cf-wong/python-package-template/releases"
+
+[tool.dependency-support-policy]
+# Rolling support floors (SPEC 0): runtime lower bounds are raised on a schedule
+# by the support_floor_update.yml workflow, not by Renovate. See renovate.json.
+policy = "spec0"
+groups = ["project"]
+lock = "minimal"
+# For packages with ecosystem siblings released in lockstep, exclude them here
+# and let Renovate keep them at latest, e.g.:
+# exclude = ["my-sibling-package"]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/python_package_template"]
+
+[tool.coverage.run]
+branch = true
+
+[tool.coverage.report]
+fail_under = 0
+
+[tool.pytest.ini_options]
+addopts = "--cov-report xml:coverage.xml --cov src --cov-append -m 'not integration' --cov-report=term-missing"
+pythonpath = ["src", "scripts"]
+testpaths = "tests"
+junit_family = "xunit2"
+markers = [
+  "integration: marks as integration test",
+  "notebooks: marks as notebook test",
+  "gpu: marks as gpu test",
+  "spark: marks tests which need Spark",
+  "slow: marks tests as slow",
+  "unit: fast offline tests",
+]
+
+[tool.tox]
+legacy_tox_ini = """
+[tox]
+envlist = py, integration, spark, all
+
+[testenv]
+commands =
+    pytest -m "not integration and not spark" {posargs}
+
+[testenv:integration]
+commands =
+    pytest -m "integration" {posargs}
+
+[testenv:spark]
+extras = spark
+setenv =
+       PYSPARK_DRIVER_PYTHON = {envpython}
+       PYSPARK_PYTHON = {envpython}
+commands =
+    pytest -m "spark" {posargs}
+
+[testenv:all]
+extras = all
+setenv =
+       PYSPARK_DRIVER_PYTHON = {envpython}
+       PYSPARK_PYTHON = {envpython}
+commands =
+    pytest {posargs}
+"""
+
+[tool.mutmut]
+# mutmut copies the project into `mutants/` and mutates the copy, so the working tree is untouched.
+source_paths = ["src/python_package_template"]
+# `tests/`, `pyproject.toml` and `uv.lock` are copied by default. `scripts/` is not, and
+# tests/test_release_version.py imports from it, so it has to come along or every mutant is judged
+# against a suite that errors for reasons unrelated to the mutation.
+also_copy = ["scripts/"]
+pytest_add_cli_args_test_selection = ["tests/"]
+# The default `addopts` turn on coverage, an XML report and a JUnit file. Under mutation testing
+# they cost more than the test run itself and the reports get overwritten once per mutant, so the
+# ini value is cleared and only the marker filter is restated. Integration, gpu, spark and slow
+# tests are excluded as well: a mutant is judged by the fast unit suite.
+pytest_add_cli_args = [
+  "--override-ini=addopts=",
+  # `pythonpath = ["src", "scripts"]` would re-insert the real `src` when pytest builds its
+  # config, putting unmutated code ahead of the `mutants/src` copy that mutmut put on the path, so
+  # every test would import unmutated code and mutmut would report the whole package as "no tests".
+  # `src` is therefore left off and `mutants/src` stays the only source of the package. `scripts`
+  # is not mutated, so it can stay on the path for tests that import from it (e.g.
+  # tests/test_release_version.py); pytest resolves it against the `mutants/` rootdir.
+  "--override-ini=pythonpath=scripts",
+  "-m",
+  "not integration and not gpu and not spark and not slow",
+]
+# `mutate_only_covered_lines` is deliberately left off. It would cut the mutant count, but its
+# coverage pass ends in `_unload_modules_not_in()`, which drops every module from `sys.modules`;
+# the next in-process pytest run then re-imports a C extension and dies with
+# "ImportError: cannot load module more than once per process", because a C extension cannot be
+# initialised twice in one interpreter.
+
+[tool.ruff]
+line-length = 120 # Matches Black's default
+target-version = "py312" # Align with CI (3.12–3.14) and requires-python (>=3.12)
+lint.extend-select = [
+  "E",
+  "F",
+  "W",   # pycodestyle errors and warnings
+  "I",   # isort rules
+  "UP",  # pyupgrade rules
+  "C90", # McCabe complexity
+  "N",   # PEP8 naming
+  "B",   # Bugbear (opinionated checks)
+  "A",   # Flake8-builtins
+  "C4",  # Flake8-comprehensions
+  "PT",  # Flake8-pytest
+  "RUF", # Ruff-specific rules
+  "PL",  # Add pylint rules for fuller coverage
+  "SIM", # Similarities
+  "T10", # Debugger statements
+  "DOC", # Docstring
+  "D",   # Doc style
+  "S",   # Security
+]
+lint.ignore = [
+  "E501", # Line length (handled by formatter)
+  "C901", # Disable overly strict complexity checks (optional, adjust as needed)
+]
+fix = true # Enable autofix
+lint.unfixable = [] # List rules that should not be autofixed, if any
+
+[tool.ruff.format]
+quote-style = "double"       # Use double quotes for strings
+indent-style = "space"       # Use spaces for indentation
+docstring-code-format = true # Format code in docstrings
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+# Ignore specific rules in the tests directory
+"tests/*" = ["S101", "ARG001", "PLC0415", "PLR2004"]
+# S101: allow assert statements
+# ARG001: allow unused function arguments (common in fixtures)
+# PLC0415: allow import statements not at the top level
+# PLR2004: allow magic values in the unit tests
