@@ -133,7 +133,7 @@ def parse_csv(content: bytes, profile: ImportProfile) -> list[ParsedRow]:
         date_text = (raw.get(profile.date) or "").strip()
         try:
             if profile.date_format:
-                date = dt.datetime.strptime(date_text, profile.date_format).date()  # noqa: DTZ007
+                date = dt.datetime.strptime(date_text, profile.date_format).date()
             else:
                 date = dt.date.fromisoformat(date_text)
         except ValueError as exc:
