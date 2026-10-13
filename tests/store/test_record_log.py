@@ -105,7 +105,7 @@ def test_malformed_line_is_an_integrity_error(tmp_path):
     _append(store, {"n": 1})
     segment = store.segments()[0]
     segment.write_text(segment.read_text() + "not json\n", encoding="utf-8")
-    with pytest.raises(IntegrityError, match=re.escape(f"{segment.relative_to(tmp_path).as_posix()}:2")):
+    with pytest.raises(IntegrityError, match=re.escape(f"{segment.relative_to(tmp_path)}:2")):
         store.read_records()
 
 
